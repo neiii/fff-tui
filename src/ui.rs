@@ -1,7 +1,8 @@
 use crate::highlight::{find_match_indices, highlight_content, indices_to_ranges};
 use crate::icons;
-use crate::picker::{MatchKind, SearchMode, SearchScope, UnifiedResult};
+use crate::picker::{selection_key, MatchKind, SearchMode, SearchScope, UnifiedResult};
 use crate::theme::Theme;
+use std::collections::HashSet;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -19,6 +20,7 @@ pub struct UiState {
     pub scroll_offset: usize,
     pub total_files: usize,
     pub total_matched: usize,
+    pub selected_keys: HashSet<String>,
     pub is_scanning: bool,
     pub spinner_frame: usize,
     pub terminal_width: u16,
@@ -195,7 +197,8 @@ fn draw_result_list(frame: &mut Frame, area: Rect, state: &UiState, theme: &Them
             height: 1,
         };
 
-        let line = build_result_line(result, &state.highlight_query, theme, inner.width as usize, is_selected, state.group_grep);
+        let is_marked = state.selected_keys.contains(&selection_key(result));
+        let line = build_result_line(result, &state.highlight_query, theme, inner.width as usize, is_selected, is_marked, state.group_grep);
         let para = Paragraph::new(line);
         frame.render_widget(para, row_area);
     }
@@ -207,6 +210,7 @@ fn build_result_line(
     theme: &Theme,
     available_width: usize,
     is_selected: bool,
+    is_marked: bool,
     group_grep: bool,
 ) -> Line<'static> {
     let base_style = if is_selected {
@@ -223,12 +227,21 @@ fn build_result_line(
 
     let mut spans: Vec<Span<'static>> = Vec::new();
 
-    // Selection pointer
-    if is_selected {
-        spans.push(Span::styled("> ", Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD)));
+    // Selection pointer + multi-select marker
+    let pointer = if is_selected { ">" } else { " " };
+    let marker = if is_marked { "▊" } else { " " };
+    let pointer_style = if is_selected {
+        Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD)
     } else {
-        spans.push(Span::styled("  ", base_style));
-    }
+        base_style
+    };
+    let marker_style = if is_marked {
+        Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD)
+    } else {
+        base_style
+    };
+    spans.push(Span::styled(pointer.to_string(), pointer_style));
+    spans.push(Span::styled(marker.to_string(), marker_style));
 
     let prefix_width = 2;
     let content_width = available_width.saturating_sub(prefix_width);
@@ -758,11 +771,13 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme
     // Middle: hints
     let mut hints = vec![
         Span::styled("ctrl-c", Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD)),
-        Span::styled(": quit  ", theme.style_status()),
+        Span::styled(": quit ", theme.style_status()),
         Span::styled("tab", Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD)),
-        Span::styled(": preview  ", theme.style_status()),
+        Span::styled(": sel ", theme.style_status()),
+        Span::styled("ctrl-o", Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD)),
+        Span::styled(": prev ", theme.style_status()),
         Span::styled("↑↓", Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD)),
-        Span::styled(": navigate", theme.style_status()),
+        Span::styled(": nav", theme.style_status()),
     ];
 
     // Add scope indicator
@@ -816,6 +831,7 @@ mod tests {
             scroll_offset: 0,
             total_files: files,
             total_matched: matches,
+            selected_keys: HashSet::new(),
             is_scanning,
             spinner_frame: 0,
             terminal_width: 120,
@@ -1152,6 +1168,54 @@ mod tests {
         assert!(
             text.contains("[grouped]"),
             "expected [grouped] indicator in status bar:\n{text}"
+        );
+    }
+
+    #[test]
+    fn test_multi_select_marker_rendered() {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let results = vec![
+            UnifiedResult {
+                kind: MatchKind::File,
+                relative_path: "src/main.rs".into(),
+                absolute_path: "/dev/null/src/main.rs".into(),
+                score: 0,
+                exact_match: false,
+                line_number: None,
+                column: None,
+                line_content: None,
+                match_byte_offsets: None,
+                is_definition: None,
+            },
+            UnifiedResult {
+                kind: MatchKind::File,
+                relative_path: "src/lib.rs".into(),
+                absolute_path: "/dev/null/src/lib.rs".into(),
+                score: 0,
+                exact_match: false,
+                line_number: None,
+                column: None,
+                line_content: None,
+                match_byte_offsets: None,
+                is_definition: None,
+            },
+        ];
+        let mut state = make_state(false, 10, 2, results);
+        state.selected_keys.insert("/dev/null/src/lib.rs".into());
+
+        terminal.draw(|f| draw(f, &state, &Theme::default())).unwrap();
+
+        let text = buffer_to_string(terminal.backend().buffer());
+        // First row is cursor, should have pointer
+        assert!(
+            text.contains("> "),
+            "expected selection pointer in:\n{text}"
+        );
+        // Second row should have marker but no pointer
+        assert!(
+            text.contains("▊"),
+            "expected multi-select marker in:\n{text}"
         );
     }
 }

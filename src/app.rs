@@ -1,8 +1,9 @@
-use crate::picker::{PickerBackend, SearchMode, SearchScope, UnifiedResult};
+use crate::picker::{selection_key, PickerBackend, SearchMode, SearchScope, UnifiedResult};
 use crate::theme::Theme;
 use crate::ui::{draw, UiState};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 pub struct App {
@@ -15,6 +16,7 @@ pub struct App {
     pub total_matched: usize,
     pub should_quit: bool,
     pub should_select: bool,
+    pub selected_items: Vec<UnifiedResult>,
     pub spinner_frame: usize,
     pub last_spinner_tick: Instant,
     pub terminal_height: u16,
@@ -37,6 +39,7 @@ impl App {
             total_matched: 0,
             should_quit: false,
             should_select: false,
+            selected_items: Vec::new(),
             spinner_frame: 0,
             last_spinner_tick: Instant::now(),
             terminal_height: 24,
@@ -52,7 +55,7 @@ impl App {
         &mut self,
         terminal: &mut Terminal<crate::tui::Backend>,
         backend: &PickerBackend,
-    ) -> anyhow::Result<Option<UnifiedResult>> {
+    ) -> anyhow::Result<Option<Vec<UnifiedResult>>> {
         let tick_rate = Duration::from_millis(50);
         let scan_timeout = Duration::from_secs(5);
         let scan_start = Instant::now();
@@ -81,6 +84,7 @@ impl App {
                 scroll_offset: self.scroll_offset,
                 total_files: self.total_files,
                 total_matched: self.total_matched,
+                selected_keys: self.selected_items.iter().map(selection_key).collect(),
                 is_scanning: true,
                 spinner_frame: self.spinner_frame,
                 terminal_width: self.terminal_width,
@@ -100,8 +104,6 @@ impl App {
                     Event::Key(key) => {
                         if key.code == KeyCode::Esc
                             || (key.code == KeyCode::Char('c')
-                                && key.modifiers.contains(KeyModifiers::CONTROL))
-                            || (key.code == KeyCode::Char('d')
                                 && key.modifiers.contains(KeyModifiers::CONTROL))
                         {
                             self.should_quit = true;
@@ -149,6 +151,7 @@ impl App {
                 scroll_offset: self.scroll_offset,
                 total_files: self.total_files,
                 total_matched: self.total_matched,
+                selected_keys: self.selected_items.iter().map(selection_key).collect(),
                 is_scanning,
                 spinner_frame: self.spinner_frame,
                 terminal_width: self.terminal_width,
@@ -177,7 +180,11 @@ impl App {
         }
 
         if self.should_select {
-            Ok(self.results.get(self.selected).cloned())
+            if self.selected_items.is_empty() {
+                Ok(self.results.get(self.selected).cloned().map(|r| vec![r]))
+            } else {
+                Ok(Some(self.selected_items.clone()))
+            }
         } else {
             Ok(None)
         }
@@ -190,9 +197,12 @@ impl App {
                     && !key.modifiers.contains(KeyModifiers::ALT)
                 {
                     match c {
-                        'c' | 'd' => self.should_quit = true,
+                        'c' => self.should_quit = true,
                         'n' => self.move_selection(1),
                         'p' => self.move_selection(-1),
+                        'a' => self.select_all_visible(),
+                        'd' => self.deselect_all(),
+                        'o' => self.preview_enabled = !self.preview_enabled,
                         'u' => self.move_selection_page(-1),
                         'l' => {
                             self.query.clear();
@@ -254,7 +264,7 @@ impl App {
             KeyCode::Enter if !self.results.is_empty() => {
                 self.should_select = true;
             }
-            KeyCode::Tab => self.preview_enabled = !self.preview_enabled,
+            KeyCode::Tab => self.toggle_selection(),
             KeyCode::Esc => self.should_quit = true,
             KeyCode::Up => self.move_selection(-1),
             KeyCode::Down => self.move_selection(1),
@@ -314,5 +324,29 @@ impl App {
         } else if self.selected >= self.scroll_offset + visible {
             self.scroll_offset = self.selected.saturating_sub(visible.saturating_sub(1));
         }
+    }
+
+    fn toggle_selection(&mut self) {
+        if let Some(result) = self.results.get(self.selected) {
+            let key = selection_key(result);
+            if let Some(pos) = self.selected_items.iter().position(|r| selection_key(r) == key) {
+                self.selected_items.remove(pos);
+            } else {
+                self.selected_items.push(result.clone());
+            }
+        }
+    }
+
+    fn select_all_visible(&mut self) {
+        for result in &self.results {
+            let key = selection_key(result);
+            if !self.selected_items.iter().any(|r| selection_key(r) == key) {
+                self.selected_items.push(result.clone());
+            }
+        }
+    }
+
+    fn deselect_all(&mut self) {
+        self.selected_items.clear();
     }
 }

@@ -31,6 +31,14 @@ pub enum MatchKind {
     FileHeader,
 }
 
+/// Unique key for a result used in multi-select.
+pub fn selection_key(result: &UnifiedResult) -> String {
+    match result.line_number {
+        Some(ln) => format!("{}:{}:{}", result.absolute_path, ln, result.column.unwrap_or(1)),
+        None => result.absolute_path.clone(),
+    }
+}
+
 /// A unified search result — either a file path match or a content line match.
 #[derive(Clone)]
 pub struct UnifiedResult {

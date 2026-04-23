@@ -5,6 +5,7 @@ use crate::theme::Theme;
 use crate::ui::{draw, UiState};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -40,6 +41,7 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             scroll_offset: app.scroll_offset,
             total_files: app.total_files,
             total_matched: app.total_matched,
+            selected_keys: HashSet::new(),
             is_scanning: true,
             spinner_frame: app.spinner_frame,
             terminal_width: app.terminal_width,
@@ -83,6 +85,7 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             scroll_offset: app.scroll_offset,
             total_files: app.total_files,
             total_matched: app.total_matched,
+            selected_keys: HashSet::new(),
             is_scanning,
             spinner_frame: app.spinner_frame,
             terminal_width: app.terminal_width,
@@ -114,6 +117,7 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             scroll_offset: app.scroll_offset,
             total_files: app.total_files,
             total_matched: app.total_matched,
+            selected_keys: HashSet::new(),
             is_scanning: backend.is_scanning(),
             spinner_frame: app.spinner_frame,
             terminal_width: app.terminal_width,

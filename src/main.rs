@@ -90,9 +90,11 @@ fn main() {
     let _ = tui::restore_terminal(&mut terminal);
 
     match result {
-        Ok(Some(result)) => {
-            let output = format_result(&result, cli.line, cli.column);
-            println!("{output}");
+        Ok(Some(results)) => {
+            for result in &results {
+                let output = format_result(result, cli.line, cli.column);
+                println!("{output}");
+            }
             process::exit(0);
         }
         Ok(None) => {
