@@ -29,37 +29,49 @@ pub struct UiState {
 pub fn draw(frame: &mut Frame, state: &UiState, theme: &Theme) {
     let area = frame.area();
 
+    // Reserve 1 line at the very bottom for the status bar (full width)
+    let status_area = Rect {
+        x: area.x,
+        y: area.y + area.height.saturating_sub(1),
+        width: area.width,
+        height: 1,
+    };
+    let work_area = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: area.height.saturating_sub(1),
+    };
+
     let show_preview = state.preview_enabled
         && state.terminal_width >= 70
         && state.results.get(state.selected).is_some();
 
-    let main_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // input bar (border + input + border)
-            Constraint::Min(3),    // results + optional preview
-            Constraint::Length(1), // status bar
-        ])
-        .split(area);
-
-    let content_area = main_chunks[1];
-
-    let (results_area, preview_area) = if show_preview {
+    let (left_area, preview_area) = if show_preview {
         let hchunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(content_area);
+            .split(work_area);
         (hchunks[0], Some(hchunks[1]))
     } else {
-        (content_area, None)
+        (work_area, None)
     };
 
-    draw_input_box(frame, main_chunks[0], state, theme);
-    draw_result_list(frame, results_area, state, theme);
+    // Stack input bar + results inside the left column
+    let left_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // input bar
+            Constraint::Min(1),    // results list
+        ])
+        .split(left_area);
+
+    draw_input_box(frame, left_chunks[0], state, theme);
+    draw_result_list(frame, left_chunks[1], state, theme);
     if let Some(preview_rect) = preview_area {
         draw_preview_pane(frame, preview_rect, state, theme);
     }
-    draw_status_bar(frame, main_chunks[2], state, theme);
+    draw_status_bar(frame, status_area, state, theme);
 }
 
 fn draw_input_box(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
