@@ -9,9 +9,7 @@ use std::path::PathBuf;
 pub struct FileResult {
     pub relative_path: String,
     pub absolute_path: String,
-    pub score: i32,
     pub exact_match: bool,
-    pub match_type: &'static str,
 }
 
 /// Output of a search operation.
@@ -122,9 +120,7 @@ impl PickerBackend {
             file_results.push(FileResult {
                 relative_path,
                 absolute_path: absolute_path.to_string_lossy().into_owned(),
-                score: score.total,
                 exact_match: score.exact_match,
-                match_type: score.match_type,
             });
         }
 
@@ -135,9 +131,6 @@ impl PickerBackend {
         }
     }
 
-    pub fn base_path(&self) -> &PathBuf {
-        &self.base_path
-    }
 }
 
 #[cfg(test)]

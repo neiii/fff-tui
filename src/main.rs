@@ -45,8 +45,6 @@ fn main() {
         }
     };
 
-
-
     // Setup terminal
     let mut terminal = match tui::setup_terminal() {
         Ok(t) => t,

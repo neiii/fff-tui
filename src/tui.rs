@@ -14,7 +14,7 @@ pub fn setup_terminal() -> io::Result<Terminal<Backend>> {
         let mut out: Box<dyn Write> = Box::new(stdout());
         enable_raw_mode()?;
         out.execute(EnterAlternateScreen)?;
-        return Ok(Terminal::new(CrosstermBackend::new(out))?);
+        return Terminal::new(CrosstermBackend::new(out));
     }
 
     // Fallback to stderr (e.g. when stdout is captured by shell command substitution)
@@ -22,11 +22,10 @@ pub fn setup_terminal() -> io::Result<Terminal<Backend>> {
         let mut out: Box<dyn Write> = Box::new(stderr());
         enable_raw_mode()?;
         out.execute(EnterAlternateScreen)?;
-        return Ok(Terminal::new(CrosstermBackend::new(out))?);
+        return Terminal::new(CrosstermBackend::new(out));
     }
 
-    Err(io::Error::new(
-        io::ErrorKind::Other,
+    Err(io::Error::other(
         "No TTY available. fff requires an interactive terminal.",
     ))
 }

@@ -128,10 +128,8 @@ impl App {
                 self.query.clear();
                 self.refresh_search(backend);
             }
-            KeyCode::Enter => {
-                if !self.results.is_empty() {
-                    self.should_select = true;
-                }
+            KeyCode::Enter if !self.results.is_empty() => {
+                self.should_select = true;
             }
             KeyCode::Esc => self.should_quit = true,
             KeyCode::Up => self.move_selection(-1),
@@ -142,11 +140,9 @@ impl App {
                 self.selected = 0;
                 self.scroll_offset = 0;
             }
-            KeyCode::End => {
-                if !self.results.is_empty() {
-                    self.selected = self.results.len() - 1;
-                    self.ensure_visible();
-                }
+            KeyCode::End if !self.results.is_empty() => {
+                self.selected = self.results.len() - 1;
+                self.ensure_visible();
             }
             _ => {}
         }
