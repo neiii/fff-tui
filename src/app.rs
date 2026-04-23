@@ -256,10 +256,6 @@ impl App {
                             }
                             self.refresh_search(backend);
                         }
-                        'm' => {
-                            self.cycle_grep_mode();
-                            self.refresh_search(backend);
-                        }
                         _ => {}
                     }
                 } else {
@@ -281,18 +277,22 @@ impl App {
             KeyCode::Tab => self.toggle_selection(),
             KeyCode::Esc => self.should_quit = true,
             KeyCode::Up => {
-                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                if key.modifiers.contains(KeyModifiers::ALT) {
                     self.cycle_query_history(-1, backend);
                 } else {
                     self.move_selection(-1);
                 }
             }
             KeyCode::Down => {
-                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                if key.modifiers.contains(KeyModifiers::ALT) {
                     self.cycle_query_history(1, backend);
                 } else {
                     self.move_selection(1);
                 }
+            }
+            KeyCode::BackTab => {
+                self.cycle_grep_mode();
+                self.refresh_search(backend);
             }
             KeyCode::PageUp => self.move_selection_page(-1),
             KeyCode::PageDown => self.move_selection_page(1),

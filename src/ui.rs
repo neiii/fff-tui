@@ -227,30 +227,39 @@ fn build_result_line(
         theme.style_match()
     };
 
+    // Helper: apply selected background to any style when row is selected
+    let sel = |s: Style| -> Style {
+        if is_selected { s.bg(theme.selected_bg) } else { s }
+    };
+
     let mut spans: Vec<Span<'static>> = Vec::new();
 
     // Selection pointer + multi-select marker + git badge
     let pointer = if is_selected { ">" } else { " " };
     let marker = if is_marked { "▊" } else { " " };
-    let (git_char, git_color) = git_badge(result.git_status.as_deref(), theme);
+    let (git_char, git_color) = if result.kind == MatchKind::Line {
+        (' ', theme.fg)
+    } else {
+        git_badge(result.git_status.as_deref(), theme)
+    };
     let pointer_style = if is_selected {
-        Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD)
+        sel(Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD))
     } else {
         base_style
     };
     let marker_style = if is_marked {
-        Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD)
+        sel(Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD))
     } else {
         base_style
     };
     spans.push(Span::styled(pointer.to_string(), pointer_style));
     spans.push(Span::styled(marker.to_string(), marker_style));
     spans.push(Span::styled(
-        git_char.to_string(),
-        Style::default().fg(git_color).add_modifier(Modifier::BOLD),
+        format!("{git_char} "),
+        sel(Style::default().fg(git_color).add_modifier(Modifier::BOLD)),
     ));
 
-    let prefix_width = 3;
+    let prefix_width = 4;
     let content_width = available_width.saturating_sub(prefix_width);
 
     if result.kind == MatchKind::Line {
@@ -424,7 +433,7 @@ fn build_result_line(
                 if pad_width > 0 {
                     spans.push(Span::styled(" ".repeat(pad_width), base_style));
                 }
-                spans.push(Span::styled(meta, theme.style_dim()));
+                spans.push(Span::styled(meta, sel(theme.style_dim())));
             } else {
                 spans.extend(content_spans);
                 let pad_width = if total_needed <= content_width {
@@ -435,7 +444,7 @@ fn build_result_line(
                 if pad_width > 0 {
                     spans.push(Span::styled(" ".repeat(pad_width), base_style));
                 }
-                spans.push(Span::styled(meta, theme.style_dim()));
+                spans.push(Span::styled(meta, sel(theme.style_dim())));
             }
         }
     } else if result.kind == MatchKind::File {
@@ -447,7 +456,7 @@ fn build_result_line(
 
         spans.push(Span::styled(
             format!("{icon_str} "),
-            Style::default().fg(icon_color),
+            sel(Style::default().fg(icon_color)),
         ));
 
         let path_obj = std::path::Path::new(path);
@@ -458,7 +467,7 @@ fn build_result_line(
             .filter(|d| !d.is_empty() && *d != ".")
             .unwrap_or("");
 
-        let prefix_width = 3 + icon_str.width() + 1; // pointer + marker + git + icon + space
+        let prefix_width = 4 + icon_str.width() + 1; // pointer + marker + git-col + icon + space
         let content_width = available_width.saturating_sub(prefix_width);
 
         // Build filename spans with fuzzy highlights
@@ -486,12 +495,12 @@ fn build_result_line(
             let dir_text = format!(" {dir_path}");
             let dir_width = dir_text.width();
             if file_width + dir_width <= content_width {
-                dir_spans.push(Span::styled(dir_text, theme.style_dim()));
+                dir_spans.push(Span::styled(dir_text, sel(theme.style_dim())));
             } else if content_width > file_width + 4 {
                 let max_dir = content_width.saturating_sub(file_width + 2);
                 let shortened = shorten_dir_path(dir_path, max_dir, path_shorten_strategy);
                 if !shortened.is_empty() {
-                    dir_spans.push(Span::styled(format!(" {shortened}"), theme.style_dim()));
+                    dir_spans.push(Span::styled(format!(" {shortened}"), sel(theme.style_dim())));
                 }
             }
         }
@@ -518,7 +527,7 @@ fn build_result_line(
 
         spans.push(Span::styled(
             format!("{icon_str} "),
-            Style::default().fg(icon_color).add_modifier(Modifier::BOLD),
+            sel(Style::default().fg(icon_color).add_modifier(Modifier::BOLD)),
         ));
 
         let path_obj = std::path::Path::new(path);
@@ -529,7 +538,7 @@ fn build_result_line(
             .filter(|d| !d.is_empty() && *d != ".")
             .unwrap_or("");
 
-        let prefix_width = 3 + icon_str.width() + 1;
+        let prefix_width = 4 + icon_str.width() + 1;
         let content_width = available_width.saturating_sub(prefix_width);
 
         let mut file_spans: Vec<Span<'static>> = Vec::new();
@@ -557,12 +566,12 @@ fn build_result_line(
             let dir_text = format!(" {dir_path}");
             let dir_width = dir_text.width();
             if file_width + dir_width <= content_width {
-                dir_spans.push(Span::styled(dir_text, theme.style_dim().add_modifier(Modifier::BOLD)));
+                dir_spans.push(Span::styled(dir_text, sel(theme.style_dim().add_modifier(Modifier::BOLD))));
             } else if content_width > file_width + 4 {
                 let max_dir = content_width.saturating_sub(file_width + 2);
                 let shortened = shorten_dir_path(dir_path, max_dir, path_shorten_strategy);
                 if !shortened.is_empty() {
-                    dir_spans.push(Span::styled(format!(" {shortened}"), theme.style_dim().add_modifier(Modifier::BOLD)));
+                    dir_spans.push(Span::styled(format!(" {shortened}"), sel(theme.style_dim().add_modifier(Modifier::BOLD))));
                 }
             }
         }
@@ -851,8 +860,8 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme
         Span::styled(": quit ", theme.style_status()),
         Span::styled("tab", Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD)),
         Span::styled(": sel ", theme.style_status()),
-        Span::styled("ctrl-o", Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD)),
-        Span::styled(": prev ", theme.style_status()),
+        Span::styled("shift-tab", Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD)),
+        Span::styled(": mode ", theme.style_status()),
         Span::styled("↑↓", Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD)),
         Span::styled(": nav", theme.style_status()),
     ];
@@ -1210,7 +1219,7 @@ mod tests {
                 line_content: None,
                 match_byte_offsets: None,
                 is_definition: None,
-            git_status: None,
+                git_status: Some("modified".into()),
             },
             UnifiedResult {
                 kind: MatchKind::Line,
@@ -1223,7 +1232,7 @@ mod tests {
                 line_content: Some("pub struct App {}".into()),
                 match_byte_offsets: Some(vec![(4, 7)]),
                 is_definition: Some(true),
-                git_status: None,
+                git_status: Some("modified".into()),
             },
         ];
         let mut state = make_state(false, 10, 2, results);
@@ -1248,6 +1257,18 @@ mod tests {
         assert!(
             !text.contains("app.rs:42"),
             "expected no right-side combined meta:\n{text}"
+        );
+        // FileHeader should show git badge, but line should not
+        let lines: Vec<&str> = text.lines().collect();
+        let header_line = lines.iter().find(|l| l.contains("app.rs") && l.contains('M')).expect("header with M");
+        let line_row = lines.iter().find(|l| l.contains(":42:5")).expect("line row");
+        assert!(
+            header_line.contains('M'),
+            "expected FileHeader to show git badge:\n{text}"
+        );
+        assert!(
+            !line_row.contains('M'),
+            "expected Line result to NOT show git badge:\n{text}"
         );
     }
 
