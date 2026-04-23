@@ -31,6 +31,10 @@ struct Cli {
     /// Append line and column to output for line matches (e.g., file:42:1).
     #[arg(long)]
     column: bool,
+
+    /// Group grep results by file (shows :line:col gutter on the left).
+    #[arg(long)]
+    group: bool,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -79,6 +83,7 @@ fn main() {
 
     // Run app
     let mut app = App::new();
+    app.search_mode.group_grep = cli.group;
     let result = app.run(&mut terminal, &backend);
 
     // Restore terminal regardless of result
@@ -105,8 +110,8 @@ fn format_result(result: &UnifiedResult, line: bool, column: bool) -> String {
     // FileHeader behaves like File for output formatting
     match (column, line, result.line_number) {
         (true, _, Some(ln)) => {
-            // Column is always 1 for now (beginning of line)
-            format!("{}:{}:1", path, ln)
+            let col = result.column.unwrap_or(1);
+            format!("{}:{}:{}", path, ln, col)
         }
         (false, true, Some(ln)) => {
             format!("{}:{}", path, ln)
@@ -127,6 +132,7 @@ mod tests {
             score: 0,
             exact_match: false,
             line_number: None,
+            column: None,
             line_content: None,
             match_byte_offsets: None,
             is_definition: None,
@@ -141,6 +147,7 @@ mod tests {
             score: 0,
             exact_match: false,
             line_number: Some(817),
+            column: Some(1),
             line_content: Some(r#"path = "television/main.rs""#.into()),
             match_byte_offsets: Some(vec![(0, 4)]),
             is_definition: Some(false),

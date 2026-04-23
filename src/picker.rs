@@ -41,6 +41,7 @@ pub struct UnifiedResult {
     pub exact_match: bool,
     /// Line-only fields
     pub line_number: Option<u64>,
+    pub column: Option<u32>,
     pub line_content: Option<String>,
     pub match_byte_offsets: Option<Vec<(u32, u32)>>,
     pub is_definition: Option<bool>,
@@ -168,6 +169,7 @@ impl PickerBackend {
                     score: score.total,
                     exact_match: score.exact_match,
                     line_number: None,
+                    column: None,
                     line_content: None,
                     match_byte_offsets: None,
                     is_definition: None,
@@ -215,6 +217,7 @@ impl PickerBackend {
                 let file = grep_result.files[m.file_index];
                 let relative_path = file.relative_path(picker);
                 let absolute_path = file.absolute_path(picker, &self.base_path);
+                let column = m.match_byte_offsets.first().map(|(start, _)| *start + 1);
                 line_results.push(UnifiedResult {
                     kind: MatchKind::Line,
                     relative_path,
@@ -222,6 +225,7 @@ impl PickerBackend {
                     score: 0,
                     exact_match: false,
                     line_number: Some(m.line_number),
+                    column,
                     line_content: Some(m.line_content.clone()),
                     match_byte_offsets: Some(
                         m.match_byte_offsets.iter().map(|&(a, b)| (a, b)).collect(),
@@ -247,6 +251,7 @@ impl PickerBackend {
                         score: 0,
                         exact_match: false,
                         line_number: None,
+                        column: None,
                         line_content: None,
                         match_byte_offsets: None,
                         is_definition: None,

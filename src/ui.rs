@@ -235,18 +235,6 @@ fn build_result_line(
 
     if result.kind == MatchKind::Line {
         let (content, offset_shift) = strip_leading_whitespace(result.line_content.as_deref().unwrap_or(""));
-        let file_name = std::path::Path::new(&result.relative_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(&result.relative_path);
-        let line_num = result.line_number.unwrap_or(0);
-        let meta = if group_grep {
-            format!("{line_num}")
-        } else {
-            format!("{file_name}:{line_num}")
-        };
-        let meta_width = meta.width();
-        let gap = 2;
 
         // Adjust byte offsets for stripped leading whitespace
         let adjusted_offsets: Option<Vec<(u32, u32)>> = result.match_byte_offsets.as_ref().map(|offsets| {
@@ -299,73 +287,136 @@ fn build_result_line(
             content_spans.push(Span::styled("  §", match_style));
         }
 
-        // Compute content display width
-        let content_display_width: usize = content_spans
-            .iter()
-            .map(|s| s.content.width())
-            .sum();
+        if group_grep {
+            // Grouped mode: :line:col gutter on the left, indented under file header
+            let line_num = result.line_number.unwrap_or(0);
+            let col = result.column.unwrap_or(1);
+            let gutter = format!("  :{line_num}:{col} ");
+            let gutter_width = gutter.width();
 
-        let total_needed = content_display_width + gap + meta_width;
+            spans.push(Span::styled(gutter, theme.style_dim()));
 
-        if total_needed > content_width && content_width > meta_width + gap + 1 {
-            let max_content_display = content_width.saturating_sub(meta_width + gap + 1);
-            let (truncated, truncated_width) = truncate_to_width(content, max_content_display);
-            let mut truncated_spans = Vec::new();
-            if !truncated.is_empty() {
-                let trunc_byte_len = truncated.len();
-                if let Some(ref offsets) = adjusted_offsets {
-                    let mut last_end = 0usize;
-                    for &(start, end) in offsets {
-                        let start = start as usize;
-                        let end = end as usize;
-                        if start >= trunc_byte_len {
-                            break;
-                        }
-                        if start > last_end {
+            let remaining_width = content_width.saturating_sub(gutter_width);
+            let content_display_width: usize = content_spans.iter().map(|s| s.content.width()).sum();
+
+            if content_display_width > remaining_width && remaining_width > 3 {
+                let max_content_display = remaining_width.saturating_sub(1);
+                let (truncated, _) = truncate_to_width(content, max_content_display);
+                let mut truncated_spans = Vec::new();
+                if !truncated.is_empty() {
+                    let trunc_byte_len = truncated.len();
+                    if let Some(ref offsets) = adjusted_offsets {
+                        let mut last_end = 0usize;
+                        for &(start, end) in offsets {
+                            let start = start as usize;
+                            let end = end as usize;
+                            if start >= trunc_byte_len {
+                                break;
+                            }
+                            if start > last_end {
+                                truncated_spans.push(Span::styled(
+                                    truncated[last_end..start].to_string(),
+                                    base_style,
+                                ));
+                            }
+                            let actual_end = end.min(trunc_byte_len);
                             truncated_spans.push(Span::styled(
-                                truncated[last_end..start].to_string(),
+                                truncated[start..actual_end].to_string(),
+                                match_style,
+                            ));
+                            last_end = actual_end;
+                        }
+                        if last_end < trunc_byte_len {
+                            truncated_spans.push(Span::styled(
+                                truncated[last_end..].to_string(),
                                 base_style,
                             ));
                         }
-                        let actual_end = end.min(trunc_byte_len);
-                        truncated_spans.push(Span::styled(
-                            truncated[start..actual_end].to_string(),
-                            match_style,
-                        ));
-                        last_end = actual_end;
+                    } else {
+                        truncated_spans.push(Span::styled(truncated.to_string(), base_style));
                     }
-                    if last_end < trunc_byte_len {
-                        truncated_spans.push(Span::styled(
-                            truncated[last_end..].to_string(),
-                            base_style,
-                        ));
-                    }
+                    truncated_spans.push(Span::styled("…".to_string(), base_style));
                 } else {
-                    truncated_spans.push(Span::styled(truncated.to_string(), base_style));
+                    truncated_spans.push(Span::styled("…".to_string(), base_style));
                 }
-                truncated_spans.push(Span::styled("…".to_string(), base_style));
+                spans.extend(truncated_spans);
             } else {
-                truncated_spans.push(Span::styled("…".to_string(), base_style));
+                spans.extend(content_spans);
             }
-
-            spans.extend(truncated_spans);
-            let used_width = prefix_width + truncated_width + 1;
-            let pad_width = available_width.saturating_sub(used_width + meta_width);
-            if pad_width > 0 {
-                spans.push(Span::styled(" ".repeat(pad_width), base_style));
-            }
-            spans.push(Span::styled(meta, theme.style_dim()));
         } else {
-            spans.extend(content_spans);
-            let pad_width = if total_needed <= content_width {
-                content_width.saturating_sub(total_needed)
+            // Non-grouped mode: content with filename:line meta on the right
+            let file_name = std::path::Path::new(&result.relative_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&result.relative_path);
+            let line_num = result.line_number.unwrap_or(0);
+            let meta = format!("{file_name}:{line_num}");
+            let meta_width = meta.width();
+            let gap = 2;
+
+            let content_display_width: usize = content_spans.iter().map(|s| s.content.width()).sum();
+            let total_needed = content_display_width + gap + meta_width;
+
+            if total_needed > content_width && content_width > meta_width + gap + 1 {
+                let max_content_display = content_width.saturating_sub(meta_width + gap + 1);
+                let (truncated, truncated_width) = truncate_to_width(content, max_content_display);
+                let mut truncated_spans = Vec::new();
+                if !truncated.is_empty() {
+                    let trunc_byte_len = truncated.len();
+                    if let Some(ref offsets) = adjusted_offsets {
+                        let mut last_end = 0usize;
+                        for &(start, end) in offsets {
+                            let start = start as usize;
+                            let end = end as usize;
+                            if start >= trunc_byte_len {
+                                break;
+                            }
+                            if start > last_end {
+                                truncated_spans.push(Span::styled(
+                                    truncated[last_end..start].to_string(),
+                                    base_style,
+                                ));
+                            }
+                            let actual_end = end.min(trunc_byte_len);
+                            truncated_spans.push(Span::styled(
+                                truncated[start..actual_end].to_string(),
+                                match_style,
+                            ));
+                            last_end = actual_end;
+                        }
+                        if last_end < trunc_byte_len {
+                            truncated_spans.push(Span::styled(
+                                truncated[last_end..].to_string(),
+                                base_style,
+                            ));
+                        }
+                    } else {
+                        truncated_spans.push(Span::styled(truncated.to_string(), base_style));
+                    }
+                    truncated_spans.push(Span::styled("…".to_string(), base_style));
+                } else {
+                    truncated_spans.push(Span::styled("…".to_string(), base_style));
+                }
+
+                spans.extend(truncated_spans);
+                let used_width = prefix_width + truncated_width + 1;
+                let pad_width = available_width.saturating_sub(used_width + meta_width);
+                if pad_width > 0 {
+                    spans.push(Span::styled(" ".repeat(pad_width), base_style));
+                }
+                spans.push(Span::styled(meta, theme.style_dim()));
             } else {
-                0
-            };
-            if pad_width > 0 {
-                spans.push(Span::styled(" ".repeat(pad_width), base_style));
+                spans.extend(content_spans);
+                let pad_width = if total_needed <= content_width {
+                    content_width.saturating_sub(total_needed)
+                } else {
+                    0
+                };
+                if pad_width > 0 {
+                    spans.push(Span::styled(" ".repeat(pad_width), base_style));
+                }
+                spans.push(Span::styled(meta, theme.style_dim()));
             }
-            spans.push(Span::styled(meta, theme.style_dim()));
         }
     } else if result.kind == MatchKind::File {
         // File result: icon + filename (highlighted) + dimmed directory
@@ -805,6 +856,7 @@ mod tests {
             score: 0,
             exact_match: false,
             line_number: None,
+            column: None,
             line_content: None,
             match_byte_offsets: None,
             is_definition: None,
@@ -835,6 +887,7 @@ mod tests {
             score: 0,
             exact_match: false,
             line_number: None,
+            column: None,
             line_content: None,
             match_byte_offsets: None,
             is_definition: None,
@@ -866,6 +919,7 @@ mod tests {
             score: 0,
             exact_match: false,
             line_number: None,
+            column: None,
             line_content: None,
             match_byte_offsets: None,
             is_definition: None,
@@ -892,6 +946,7 @@ mod tests {
             score: 0,
             exact_match: false,
             line_number: Some(83),
+            column: Some(1),
             line_content: Some(r#"path = "television/main.rs""#.into()),
             match_byte_offsets: Some(vec![(0, 4)]),
             is_definition: Some(false),
@@ -901,9 +956,44 @@ mod tests {
         terminal.draw(|f| draw(f, &state, &Theme::default())).unwrap();
 
         let text = buffer_to_string(terminal.backend().buffer());
+        // Non-grouped mode shows filename:line on the right
         assert!(
             text.contains("Cargo.toml:83"),
-            "expected line meta in:\n{text}"
+            "expected right-side meta in non-grouped mode:\n{text}"
+        );
+    }
+
+    #[test]
+    fn test_grouped_line_result_left_gutter() {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let results = vec![UnifiedResult {
+            kind: MatchKind::Line,
+            relative_path: "Cargo.toml".into(),
+            absolute_path: "/dev/null/Cargo.toml".into(),
+            score: 0,
+            exact_match: false,
+            line_number: Some(83),
+            column: Some(1),
+            line_content: Some(r#"path = "television/main.rs""#.into()),
+            match_byte_offsets: Some(vec![(0, 4)]),
+            is_definition: Some(false),
+        }];
+        let mut state = make_state(false, 10, 1, results);
+        state.group_grep = true;
+
+        terminal.draw(|f| draw(f, &state, &Theme::default())).unwrap();
+
+        let text = buffer_to_string(terminal.backend().buffer());
+        // Grouped mode shows :line:col on the left
+        assert!(
+            text.contains(":83:1"),
+            "expected left gutter :line:col in grouped mode:\n{text}"
+        );
+        // Right-side meta should not appear
+        assert!(
+            !text.contains("Cargo.toml:83"),
+            "expected no right-side meta in grouped mode:\n{text}"
         );
     }
 
@@ -921,6 +1011,7 @@ mod tests {
             score: 0,
             exact_match: false,
             line_number: Some(1),
+            column: Some(2),
             line_content: Some("[package]".into()),
             match_byte_offsets: Some(vec![(1, 8)]),
             is_definition: Some(false),
@@ -947,6 +1038,7 @@ mod tests {
             score: 0,
             exact_match: false,
             line_number: Some(10),
+            column: Some(1),
             line_content: Some("fn main() {}".into()),
             match_byte_offsets: None,
             is_definition: Some(true),
@@ -975,6 +1067,7 @@ mod tests {
             score: 0,
             exact_match: false,
             line_number: None,
+            column: None,
             line_content: None,
             match_byte_offsets: None,
             is_definition: None,
@@ -1002,6 +1095,7 @@ mod tests {
                 score: 0,
                 exact_match: false,
                 line_number: None,
+                column: None,
                 line_content: None,
                 match_byte_offsets: None,
                 is_definition: None,
@@ -1013,6 +1107,7 @@ mod tests {
                 score: 0,
                 exact_match: false,
                 line_number: Some(42),
+                column: Some(5),
                 line_content: Some("pub struct App {}".into()),
                 match_byte_offsets: Some(vec![(4, 7)]),
                 is_definition: Some(true),
@@ -1029,17 +1124,17 @@ mod tests {
             "expected file header in:\n{text}"
         );
         assert!(
-            text.contains("42"),
-            "expected line number in:\n{text}"
+            text.contains(":42:5"),
+            "expected left gutter :line:col in:\n{text}"
         );
         assert!(
             text.contains("pub struct"),
             "expected line content in:\n{text}"
         );
-        // In grouped mode, meta should be just the line number, not "filename:line"
+        // Old right-side combined meta should not appear
         assert!(
             !text.contains("app.rs:42"),
-            "expected no combined meta in grouped mode:\n{text}"
+            "expected no right-side combined meta:\n{text}"
         );
     }
 
