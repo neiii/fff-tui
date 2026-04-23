@@ -43,6 +43,9 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             is_scanning: true,
             spinner_frame: app.spinner_frame,
             terminal_width: app.terminal_width,
+            preview_enabled: app.preview_enabled,
+            search_mode: app.search_mode,
+            search_scope: app.search_scope,
         };
         terminal
             .draw(|f| {
@@ -82,6 +85,9 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             is_scanning,
             spinner_frame: app.spinner_frame,
             terminal_width: app.terminal_width,
+            preview_enabled: app.preview_enabled,
+            search_mode: app.search_mode,
+            search_scope: app.search_scope,
         };
         terminal
             .draw(|f| {
@@ -109,6 +115,9 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             is_scanning: backend.is_scanning(),
             spinner_frame: app.spinner_frame,
             terminal_width: app.terminal_width,
+            preview_enabled: app.preview_enabled,
+            search_mode: app.search_mode,
+            search_scope: app.search_scope,
         };
         terminal
             .draw(|f| {

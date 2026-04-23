@@ -1,5 +1,5 @@
 use crate::highlight::{find_match_indices, indices_to_ranges};
-use crate::picker::{MatchKind, UnifiedResult};
+use crate::picker::{MatchKind, SearchMode, SearchScope, UnifiedResult};
 use crate::theme::Theme;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -21,12 +21,16 @@ pub struct UiState {
     pub is_scanning: bool,
     pub spinner_frame: usize,
     pub terminal_width: u16,
+    pub preview_enabled: bool,
+    pub search_mode: SearchMode,
+    pub search_scope: SearchScope,
 }
 
 pub fn draw(frame: &mut Frame, state: &UiState, theme: &Theme) {
     let area = frame.area();
 
-    let show_preview = state.terminal_width >= 100
+    let show_preview = state.preview_enabled
+        && state.terminal_width >= 100
         && state
             .results
             .get(state.selected)
@@ -84,8 +88,58 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme
         )
     };
 
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1), Constraint::Length(18)])
+        .split(area);
+
     let paragraph = Paragraph::new(status_text).style(theme.style_status());
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, chunks[0]);
+
+    // Mode toggles: Cc W .* F [U/F/G]
+    let mut toggles = Vec::new();
+    toggles.push(mode_span(
+        "Cc",
+        state.search_mode.case_sensitive,
+        theme,
+    ));
+    toggles.push(Span::styled(" ", theme.style_status()));
+    toggles.push(mode_span(
+        "W",
+        state.search_mode.whole_word,
+        theme,
+    ));
+    toggles.push(Span::styled(" ", theme.style_status()));
+    toggles.push(mode_span(
+        ".*",
+        state.search_mode.regex,
+        theme,
+    ));
+    toggles.push(Span::styled(" ", theme.style_status()));
+    toggles.push(mode_span(
+        "F",
+        state.search_mode.fixed_strings,
+        theme,
+    ));
+    toggles.push(Span::styled(" ", theme.style_status()));
+    let scope_label = match state.search_scope {
+        SearchScope::Unified => "[U]",
+        SearchScope::FileOnly => "[F]",
+        SearchScope::GrepOnly => "[G]",
+    };
+    toggles.push(Span::styled(scope_label, theme.style_status().add_modifier(Modifier::BOLD)));
+
+    let toggle_line = Line::from(toggles).alignment(ratatui::layout::Alignment::Right);
+    let toggle_para = Paragraph::new(toggle_line).style(theme.style_status());
+    frame.render_widget(toggle_para, chunks[1]);
+}
+
+fn mode_span(label: &'static str, active: bool, theme: &Theme) -> Span<'static> {
+    if active {
+        Span::styled(label, theme.style_mode_active())
+    } else {
+        Span::styled(label, theme.style_mode_inactive())
+    }
 }
 
 fn draw_result_list(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
@@ -515,6 +569,9 @@ mod tests {
             is_scanning,
             spinner_frame: 0,
             terminal_width: 120,
+            preview_enabled: true,
+            search_mode: SearchMode::default(),
+            search_scope: SearchScope::default(),
         }
     }
 
@@ -651,6 +708,32 @@ mod tests {
         assert!(
             text.contains("1 ") || text.contains("[package]"),
             "expected preview pane content in:\n{text}"
+        );
+    }
+
+    #[test]
+    fn test_mode_buttons_rendered() {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = make_state(false, 10, 1, vec![]);
+        state.search_mode.case_sensitive = true;
+        state.search_mode.regex = true;
+        state.search_scope = SearchScope::GrepOnly;
+
+        terminal.draw(|f| draw(f, &state, &Theme::default())).unwrap();
+
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(
+            text.contains("Cc"),
+            "expected 'Cc' mode button in:\n{text}"
+        );
+        assert!(
+            text.contains(".*"),
+            "expected '.*' mode button in:\n{text}"
+        );
+        assert!(
+            text.contains("[G]"),
+            "expected '[G]' scope indicator in:\n{text}"
         );
     }
 

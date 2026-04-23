@@ -88,4 +88,15 @@ impl Theme {
     pub fn style_preview_highlight(&self) -> Style {
         Style::default().bg(self.preview_highlight_bg)
     }
+
+    pub fn style_mode_active(&self) -> Style {
+        Style::default()
+            .fg(self.match_fg)
+            .bg(self.status_bg)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    pub fn style_mode_inactive(&self) -> Style {
+        Style::default().fg(self.status_fg).bg(self.status_bg)
+    }
 }

@@ -4,6 +4,24 @@ use fff_search::{
 };
 use std::path::PathBuf;
 
+/// Search behaviour toggles (case sensitivity, regex, etc.).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SearchMode {
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+    pub regex: bool,
+    pub fixed_strings: bool,
+}
+
+/// Which result types to include in a search.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SearchScope {
+    #[default]
+    Unified,
+    FileOnly,
+    GrepOnly,
+}
+
 /// The kind of search result.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MatchKind {
@@ -96,7 +114,7 @@ impl PickerBackend {
     }
 
     /// Perform a unified search (fuzzy file + content grep) and return owned results.
-    pub fn search(&self, query: &str, limit: usize) -> SearchOutput {
+    pub fn search(&self, query: &str, mode: SearchMode, scope: SearchScope, limit: usize) -> SearchOutput {
         let guard = match self.shared_picker.read() {
             Ok(g) => g,
             Err(_) => return SearchOutput::empty(query),
@@ -117,8 +135,12 @@ impl PickerBackend {
             fff_search::FuzzyQuery::Empty => String::new(),
         };
 
-        // 1. Fuzzy file search (always run)
-        let fuzzy_results = picker.fuzzy_search(
+        // 1. Fuzzy file search
+        let mut unified = Vec::with_capacity(limit);
+        let mut total_matched = 0usize;
+
+        if scope != SearchScope::GrepOnly {
+            let fuzzy_results = picker.fuzzy_search(
             &parsed,
             None, // no query tracker for now
             FuzzySearchOptions {
@@ -131,10 +153,9 @@ impl PickerBackend {
             },
         );
 
-        let mut unified = Vec::with_capacity(limit);
-        let mut total_matched = fuzzy_results.total_matched;
+            total_matched = fuzzy_results.total_matched;
 
-        for (item, score) in fuzzy_results.items.iter().zip(fuzzy_results.scores.iter()) {
+            for (item, score) in fuzzy_results.items.iter().zip(fuzzy_results.scores.iter()) {
             let relative_path = item.relative_path(picker);
             let absolute_path = item.absolute_path(picker, &self.base_path);
             unified.push(UnifiedResult {
@@ -148,14 +169,21 @@ impl PickerBackend {
                 match_byte_offsets: None,
                 is_definition: None,
             });
+            }
         }
 
         // 2. Grep search for non-empty queries
         let mut searchable_files = 0usize;
-        if !highlight_query.is_empty() {
+        if scope != SearchScope::FileOnly && !highlight_query.is_empty() {
+            let grep_mode = if mode.regex {
+                GrepMode::Regex
+            } else {
+                GrepMode::PlainText
+            };
+
             let grep_options = GrepSearchOptions {
-                mode: GrepMode::PlainText,
-                smart_case: true,
+                mode: grep_mode,
+                smart_case: !mode.case_sensitive,
                 time_budget_ms: 200,
                 page_limit: limit,
                 classify_definitions: true,
@@ -189,7 +217,7 @@ impl PickerBackend {
             }
         }
 
-        // Sort: exact file matches first, then line matches, then other file matches by score
+        // Sort: exact file matches first, then by kind, then by score
         unified.sort_by(|a, b| {
             let a_exact = a.kind == MatchKind::File && a.exact_match;
             let b_exact = b.kind == MatchKind::File && b.exact_match;
@@ -238,7 +266,7 @@ mod tests {
         let backend = PickerBackend::new(".").unwrap();
         // Wait for scan
         std::thread::sleep(std::time::Duration::from_millis(1000));
-        let output = backend.search("", 50);
+        let output = backend.search("", SearchMode::default(), SearchScope::default(), 50);
         assert!(output.total_matched > 0 || backend.is_scanning());
     }
 
@@ -246,7 +274,7 @@ mod tests {
     fn test_search_with_query() {
         let backend = PickerBackend::new(".").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1000));
-        let output = backend.search("main", 50);
+        let output = backend.search("main", SearchMode::default(), SearchScope::default(), 50);
         // Should find src/main.rs or similar
         let has_main = output.results.iter().any(|r| {
             r.relative_path.contains("main")

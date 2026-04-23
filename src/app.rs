@@ -1,4 +1,4 @@
-use crate::picker::{PickerBackend, UnifiedResult};
+use crate::picker::{PickerBackend, SearchMode, SearchScope, UnifiedResult};
 use crate::theme::Theme;
 use crate::ui::{draw, UiState};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -20,6 +20,9 @@ pub struct App {
     pub terminal_height: u16,
     pub terminal_width: u16,
     pub last_search_refresh: Instant,
+    pub search_mode: SearchMode,
+    pub search_scope: SearchScope,
+    pub preview_enabled: bool,
 }
 
 impl App {
@@ -39,6 +42,9 @@ impl App {
             terminal_height: 24,
             terminal_width: 80,
             last_search_refresh: Instant::now(),
+            search_mode: SearchMode::default(),
+            search_scope: SearchScope::default(),
+            preview_enabled: true,
         }
     }
 
@@ -78,6 +84,9 @@ impl App {
                 is_scanning: true,
                 spinner_frame: self.spinner_frame,
                 terminal_width: self.terminal_width,
+                preview_enabled: self.preview_enabled,
+                search_mode: self.search_mode,
+                search_scope: self.search_scope,
             };
             terminal.draw(|f| {
                 draw(f, &ui_state, &Theme::default());
@@ -142,6 +151,9 @@ impl App {
                 is_scanning,
                 spinner_frame: self.spinner_frame,
                 terminal_width: self.terminal_width,
+                preview_enabled: self.preview_enabled,
+                search_mode: self.search_mode,
+                search_scope: self.search_scope,
             };
             terminal.draw(|f| {
                 draw(f, &ui_state, &Theme::default());
@@ -172,7 +184,9 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent, backend: &PickerBackend) {
         match key.code {
             KeyCode::Char(c) => {
-                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT)
+                {
                     match c {
                         'c' | 'd' => self.should_quit = true,
                         'n' => self.move_selection(1),
@@ -180,6 +194,40 @@ impl App {
                         'u' => self.move_selection_page(-1),
                         'l' => {
                             self.query.clear();
+                            self.refresh_search(backend);
+                        }
+                        't' => {
+                            self.search_scope = match self.search_scope {
+                                SearchScope::FileOnly => SearchScope::Unified,
+                                SearchScope::Unified => SearchScope::GrepOnly,
+                                SearchScope::GrepOnly => SearchScope::FileOnly,
+                            };
+                            self.refresh_search(backend);
+                        }
+                        _ => {}
+                    }
+                } else if key.modifiers.contains(KeyModifiers::ALT) {
+                    match c.to_ascii_lowercase() {
+                        'c' => {
+                            self.search_mode.case_sensitive = !self.search_mode.case_sensitive;
+                            self.refresh_search(backend);
+                        }
+                        'w' => {
+                            self.search_mode.whole_word = !self.search_mode.whole_word;
+                            self.refresh_search(backend);
+                        }
+                        'r' => {
+                            self.search_mode.regex = !self.search_mode.regex;
+                            if self.search_mode.regex {
+                                self.search_mode.fixed_strings = false;
+                            }
+                            self.refresh_search(backend);
+                        }
+                        'f' => {
+                            self.search_mode.fixed_strings = !self.search_mode.fixed_strings;
+                            if self.search_mode.fixed_strings {
+                                self.search_mode.regex = false;
+                            }
                             self.refresh_search(backend);
                         }
                         _ => {}
@@ -200,6 +248,7 @@ impl App {
             KeyCode::Enter if !self.results.is_empty() => {
                 self.should_select = true;
             }
+            KeyCode::Tab => self.preview_enabled = !self.preview_enabled,
             KeyCode::Esc => self.should_quit = true,
             KeyCode::Up => self.move_selection(-1),
             KeyCode::Down => self.move_selection(1),
@@ -219,7 +268,7 @@ impl App {
 
     pub(crate) fn refresh_search(&mut self, backend: &PickerBackend) {
         let limit = 500; // fetch enough for smooth scrolling
-        let output = backend.search(&self.query, limit);
+        let output = backend.search(&self.query, self.search_mode, self.search_scope, limit);
         self.results = output.results;
         self.total_matched = output.total_matched;
         self.total_files = backend.total_files();
