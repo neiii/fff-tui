@@ -297,8 +297,8 @@ impl App {
     }
 
     fn results_visible_count(&self) -> usize {
-        // Status bar (1) + Input (3)
-        self.terminal_height.saturating_sub(4) as usize
+        // Input bar (3) + status bar (1) + results borders (2)
+        self.terminal_height.saturating_sub(6).max(1) as usize
     }
 
     fn ensure_visible(&mut self) {

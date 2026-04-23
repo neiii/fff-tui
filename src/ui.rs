@@ -1,11 +1,11 @@
-use crate::highlight::{find_match_indices, indices_to_ranges};
+use crate::highlight::{find_match_indices, highlight_content, indices_to_ranges};
 use crate::picker::{MatchKind, SearchMode, SearchScope, UnifiedResult};
 use crate::theme::Theme;
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
-    style::Modifier,
-    text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span, Text},
+    widgets::{Block, BorderType, Borders, Padding as RatatuiPadding, Paragraph},
     Frame,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -31,121 +31,120 @@ pub fn draw(frame: &mut Frame, state: &UiState, theme: &Theme) {
 
     let show_preview = state.preview_enabled
         && state.terminal_width >= 100
-        && state
-            .results
-            .get(state.selected)
-            .map(|r| r.kind == MatchKind::Line)
-            .unwrap_or(false);
+        && state.results.get(state.selected).is_some();
 
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // status bar
+            Constraint::Length(3), // input bar (border + input + border)
             Constraint::Min(3),    // results + optional preview
-            Constraint::Length(3), // input
+            Constraint::Length(1), // status bar
         ])
         .split(area);
 
-    let results_area = if show_preview {
+    let content_area = main_chunks[1];
+
+    let (results_area, preview_area) = if show_preview {
         let hchunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(main_chunks[1]);
-        hchunks[0]
+            .split(content_area);
+        (hchunks[0], Some(hchunks[1]))
     } else {
-        main_chunks[1]
+        (content_area, None)
     };
 
-    draw_status_bar(frame, main_chunks[0], state, theme);
+    draw_input_box(frame, main_chunks[0], state, theme);
     draw_result_list(frame, results_area, state, theme);
-    if show_preview {
-        let hchunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(main_chunks[1]);
-        draw_preview_pane(frame, hchunks[1], state, theme);
+    if let Some(preview_rect) = preview_area {
+        draw_preview_pane(frame, preview_rect, state, theme);
     }
-    draw_input(frame, main_chunks[2], state, theme);
+    draw_status_bar(frame, main_chunks[2], state, theme);
 }
 
-fn draw_status_bar(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
-    let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    let spinner = if state.is_scanning {
-        spinner_chars[state.spinner_frame % spinner_chars.len()]
+fn draw_input_box(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
+    let title = if state.is_scanning {
+        " fff • scanning… "
     } else {
-        '✓'
+        " fff "
     };
 
-    let status_text = if state.is_scanning {
-        format!(
-            " {} Scanning… | {} files indexed | {} matches",
-            spinner, state.total_files, state.total_matched
+    let block = Block::default()
+        .title(
+            Line::from(title)
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(theme.mode_bg).add_modifier(Modifier::BOLD)),
         )
-    } else {
-        format!(
-            " {} Ready | {} files | {} matches",
-            spinner, state.total_files, state.total_matched
-        )
-    };
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(theme.style_border())
+        .style(theme.style_fg());
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.area() == 0 {
+        return;
+    }
+
+    // Split into prompt, input, and counter
+    let total_digits = state.total_matched.max(1).to_string().len() as u16;
+    let count_width = 3 * total_digits + 3; // " N / M "
 
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(1), Constraint::Length(18)])
-        .split(area);
+        .constraints([
+            Constraint::Length(2), // "> "
+            Constraint::Fill(1),
+            Constraint::Length(count_width),
+        ])
+        .split(inner);
 
-    let paragraph = Paragraph::new(status_text).style(theme.style_status());
-    frame.render_widget(paragraph, chunks[0]);
+    let prompt = Paragraph::new(Span::styled(
+        "> ",
+        Style::default().fg(theme.prompt_fg).add_modifier(Modifier::BOLD),
+    ));
+    frame.render_widget(prompt, chunks[0]);
 
-    // Mode toggles: Cc W .* F [U/F/G]
-    let mut toggles = Vec::new();
-    toggles.push(mode_span(
-        "Cc",
-        state.search_mode.case_sensitive,
-        theme,
-    ));
-    toggles.push(Span::styled(" ", theme.style_status()));
-    toggles.push(mode_span(
-        "W",
-        state.search_mode.whole_word,
-        theme,
-    ));
-    toggles.push(Span::styled(" ", theme.style_status()));
-    toggles.push(mode_span(
-        ".*",
-        state.search_mode.regex,
-        theme,
-    ));
-    toggles.push(Span::styled(" ", theme.style_status()));
-    toggles.push(mode_span(
-        "F",
-        state.search_mode.fixed_strings,
-        theme,
-    ));
-    toggles.push(Span::styled(" ", theme.style_status()));
-    let scope_label = match state.search_scope {
-        SearchScope::Unified => "[U]",
-        SearchScope::FileOnly => "[F]",
-        SearchScope::GrepOnly => "[G]",
-    };
-    toggles.push(Span::styled(scope_label, theme.style_status().add_modifier(Modifier::BOLD)));
+    let input = Paragraph::new(state.query.clone())
+        .style(Style::default().fg(theme.fg).add_modifier(Modifier::BOLD).italic());
+    frame.render_widget(input, chunks[1]);
 
-    let toggle_line = Line::from(toggles).alignment(ratatui::layout::Alignment::Right);
-    let toggle_para = Paragraph::new(toggle_line).style(theme.style_status());
-    frame.render_widget(toggle_para, chunks[1]);
-}
-
-fn mode_span(label: &'static str, active: bool, theme: &Theme) -> Span<'static> {
-    if active {
-        Span::styled(label, theme.style_mode_active())
+    let count_text = if state.results.is_empty() {
+        " 0 / 0 ".to_string()
     } else {
-        Span::styled(label, theme.style_mode_inactive())
+        format!(
+            " {} / {} ",
+            state.selected + 1,
+            state.results.len()
+        )
+    };
+    let counter = Paragraph::new(Span::styled(
+        count_text,
+        Style::default().fg(theme.prompt_fg).italic(),
+    ))
+    .alignment(Alignment::Right);
+    frame.render_widget(counter, chunks[2]);
+
+    // Cursor position
+    let cursor_x = chunks[1].x + state.query.width() as u16;
+    if cursor_x < chunks[1].x + chunks[1].width {
+        frame.set_cursor_position((cursor_x, chunks[1].y));
     }
 }
 
 fn draw_result_list(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
     let block = Block::default()
-        .borders(Borders::NONE)
-        .style(theme.style_fg());
+        .title(
+            Line::from(" Results ")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(theme.border_fg)),
+        )
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(theme.style_border())
+        .style(theme.style_fg())
+        .padding(RatatuiPadding::uniform(0));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -164,8 +163,8 @@ fn draw_result_list(frame: &mut Frame, area: Rect, state: &UiState, theme: &Them
             "No matches found"
         };
         let para = Paragraph::new(placeholder)
-            .style(theme.style_fg().add_modifier(Modifier::DIM))
-            .alignment(ratatui::layout::Alignment::Center);
+            .style(theme.style_dim())
+            .alignment(Alignment::Center);
         frame.render_widget(para, inner);
         return;
     }
@@ -182,8 +181,7 @@ fn draw_result_list(frame: &mut Frame, area: Rect, state: &UiState, theme: &Them
             height: 1,
         };
 
-        let line =
-            build_result_line(result, &state.highlight_query, theme, inner.width as usize, is_selected);
+        let line = build_result_line(result, &state.highlight_query, theme, inner.width as usize, is_selected);
         let para = Paragraph::new(line);
         frame.render_widget(para, row_area);
     }
@@ -210,20 +208,15 @@ fn build_result_line(
 
     let mut spans: Vec<Span<'static>> = Vec::new();
 
-    // Badge
-    match result.kind {
-        MatchKind::File => {
-            spans.push(Span::styled("[FILE]", theme.style_badge_file()));
-            spans.push(Span::styled(" ", base_style));
-        }
-        MatchKind::Line => {
-            spans.push(Span::styled("[LINE]", theme.style_badge_line()));
-            spans.push(Span::styled(" ", base_style));
-        }
+    // Selection pointer
+    if is_selected {
+        spans.push(Span::styled("> ", Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD)));
+    } else {
+        spans.push(Span::styled("  ", base_style));
     }
 
-    let badge_width = 7; // "[FILE] " or "[LINE] "
-    let content_width = available_width.saturating_sub(badge_width);
+    let prefix_width = 2;
+    let content_width = available_width.saturating_sub(prefix_width);
 
     if result.kind == MatchKind::Line {
         let content = result.line_content.as_deref().unwrap_or("");
@@ -280,12 +273,10 @@ fn build_result_line(
         let total_needed = content_display_width + gap + meta_width;
 
         if total_needed > content_width && content_width > meta_width + gap + 1 {
-            // Truncate content to make room for meta
-            let max_content_display = content_width.saturating_sub(meta_width + gap + 1); // 1 for "…"
+            let max_content_display = content_width.saturating_sub(meta_width + gap + 1);
             let (truncated, truncated_width) = truncate_to_width(content, max_content_display);
             let mut truncated_spans = Vec::new();
             if !truncated.is_empty() {
-                // Re-apply highlighting on truncated content using byte offsets
                 let trunc_byte_len = truncated.len();
                 if let Some(ref offsets) = result.match_byte_offsets {
                     let mut last_end = 0usize;
@@ -323,12 +314,12 @@ fn build_result_line(
             }
 
             spans.extend(truncated_spans);
-            let used_width = badge_width + truncated_width + 1; // +1 for "…"
+            let used_width = prefix_width + truncated_width + 1;
             let pad_width = available_width.saturating_sub(used_width + meta_width);
             if pad_width > 0 {
                 spans.push(Span::styled(" ".repeat(pad_width), base_style));
             }
-            spans.push(Span::styled(meta, base_style.add_modifier(Modifier::DIM)));
+            spans.push(Span::styled(meta, theme.style_dim()));
         } else {
             spans.extend(content_spans);
             let pad_width = if total_needed <= content_width {
@@ -339,7 +330,7 @@ fn build_result_line(
             if pad_width > 0 {
                 spans.push(Span::styled(" ".repeat(pad_width), base_style));
             }
-            spans.push(Span::styled(meta, base_style.add_modifier(Modifier::DIM)));
+            spans.push(Span::styled(meta, theme.style_dim()));
         }
     } else {
         // File result: show path with fuzzy highlights
@@ -360,8 +351,8 @@ fn build_result_line(
             spans.push(Span::styled(path[last_end..].to_string(), base_style));
         }
 
-        if spans.len() == 2 && !path.is_empty() {
-            // Only badge + space were added; add the full path
+        if spans.len() == 1 && !path.is_empty() {
+            // Only pointer was added; add the full path
             spans.push(Span::styled(path.clone(), base_style));
         }
 
@@ -388,39 +379,67 @@ fn truncate_to_width(s: &str, max_width: usize) -> (&str, usize) {
 }
 
 fn draw_preview_pane(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
-    let block = Block::default()
-        .borders(Borders::LEFT)
-        .border_style(theme.style_prompt())
-        .style(theme.style_fg());
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
     let selected = match state.results.get(state.selected) {
         Some(r) => r,
         None => return,
     };
 
-    if selected.kind != MatchKind::Line {
-        return;
-    }
+    let title = &selected.relative_path;
+
+    let block = Block::default()
+        .title(
+            Line::from(format!(" {title} "))
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(theme.preview_title_fg).add_modifier(Modifier::BOLD)),
+        )
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(theme.style_border())
+        .style(theme.style_fg())
+        .padding(RatatuiPadding::uniform(0));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
     let path = &selected.absolute_path;
-    let target_line = selected.line_number.unwrap_or(1);
-    let context = 6usize;
 
-    let lines = read_file_context(path, target_line, context);
+    let (start_line, target_line, line_count) = if selected.kind == MatchKind::Line {
+        let target = selected.line_number.unwrap_or(1);
+        let ctx = (inner.height as usize).saturating_sub(1) / 2;
+        let start = target.saturating_sub(ctx as u64).max(1);
+        (start, Some(target), inner.height as usize)
+    } else {
+        (1, None, inner.height as usize)
+    };
+
+    let lines = read_file_lines(path, start_line, line_count);
     if lines.is_empty() {
         let para = Paragraph::new("Unable to read file")
-            .style(theme.style_fg().add_modifier(Modifier::DIM));
+            .style(theme.style_dim());
         frame.render_widget(para, inner);
         return;
     }
 
-    let max_line = lines.iter().map(|(n, _)| *n).max().unwrap_or(0);
-    let gutter_width = max_line.to_string().len().max(3) + 1;
-    let visible_rows = inner.height as usize;
+    // Try to read enough content for syntax highlighting
+    let highlight_text = lines
+        .iter()
+        .map(|(_, text)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
 
-    for (row, (line_num, line_text)) in lines.iter().enumerate().take(visible_rows) {
+    let highlighted = highlight_content(path, &highlight_text);
+
+    let gutter_width = lines
+        .iter()
+        .map(|(n, _)| n.to_string().len())
+        .max()
+        .unwrap_or(3)
+        .max(3)
+        + 1;
+
+    let text_width = inner.width.saturating_sub(gutter_width as u16) as usize;
+
+    for (row, (line_num, line_text)) in lines.iter().enumerate().take(inner.height as usize) {
         let row_area = Rect {
             x: inner.x,
             y: inner.y + row as u16,
@@ -428,55 +447,47 @@ fn draw_preview_pane(frame: &mut Frame, area: Rect, state: &UiState, theme: &The
             height: 1,
         };
 
-        let is_target = *line_num == target_line;
+        let is_target = target_line.map(|t| *line_num == t).unwrap_or(false);
         let gutter_style = theme.style_preview_gutter();
-        let line_style = if is_target {
-            theme.style_preview_highlight()
-        } else {
-            theme.style_fg()
-        };
 
         let gutter_text = format!("{:>width$} ", line_num, width = gutter_width - 1);
-        let max_text_width = inner.width.saturating_sub(gutter_width as u16) as usize;
-        let display_line = truncate_line_to_width(line_text, max_text_width);
+        let display_line = truncate_line_to_width(line_text, text_width);
 
         let mut spans = vec![Span::styled(gutter_text, gutter_style)];
 
-        // Highlight matched byte offsets on the target line
-        if is_target {
-            if let Some(ref offsets) = selected.match_byte_offsets {
-                let mut last_end = 0usize;
-                for &(start, end) in offsets {
-                    let start = start as usize;
-                    let end = end as usize;
-                    if start > last_end && start <= display_line.len() {
-                        spans.push(Span::styled(
-                            display_line[last_end..start].to_string(),
-                            line_style,
-                        ));
+        // Get highlighted spans for this line if available
+        if let Some(hl_line) = highlighted.lines.get(row) {
+            let hl_text: String = hl_line.spans.iter().map(|s| s.content.as_ref()).collect();
+            if hl_text.trim() == display_line.trim() {
+                // Use the highlighted spans directly, but truncate to fit
+                let mut remaining_width = text_width;
+                for span in &hl_line.spans {
+                    let span_text = span.content.as_ref();
+                    let span_width = span_text.width();
+                    if remaining_width == 0 {
+                        break;
                     }
-                    if end <= display_line.len() {
-                        spans.push(Span::styled(
-                            display_line[start..end].to_string(),
-                            theme.style_match(),
-                        ));
-                        last_end = end;
+                    if span_width <= remaining_width {
+                        spans.push(span.clone());
+                        remaining_width -= span_width;
+                    } else {
+                        let truncated = truncate_line_to_width(span_text, remaining_width);
+                        spans.push(Span::styled(truncated, span.style));
+                        remaining_width = 0;
                     }
-                }
-                if last_end < display_line.len() {
-                    spans.push(Span::styled(
-                        display_line[last_end..].to_string(),
-                        line_style,
-                    ));
-                }
-                if spans.len() == 1 {
-                    spans.push(Span::styled(display_line, line_style));
                 }
             } else {
-                spans.push(Span::styled(display_line, line_style));
+                spans.push(Span::styled(display_line.clone(), theme.style_fg()));
             }
         } else {
-            spans.push(Span::styled(display_line, line_style));
+            spans.push(Span::styled(display_line.clone(), theme.style_fg()));
+        }
+
+        // Apply target line highlight
+        if is_target {
+            for span in &mut spans {
+                span.style = span.style.bg(theme.preview_highlight_bg);
+            }
         }
 
         let para = Paragraph::new(Line::from(spans));
@@ -484,20 +495,19 @@ fn draw_preview_pane(frame: &mut Frame, area: Rect, state: &UiState, theme: &The
     }
 }
 
-fn read_file_context(path: &str, line_number: u64, context: usize) -> Vec<(u64, String)> {
+fn read_file_lines(path: &str, start_line: u64, count: usize) -> Vec<(u64, String)> {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
     let all_lines: Vec<&str> = content.lines().collect();
-    let target_idx = line_number.saturating_sub(1) as usize;
-    let start = target_idx.saturating_sub(context);
-    let end = (target_idx + context + 1).min(all_lines.len());
+    let start_idx = start_line.saturating_sub(1) as usize;
+    let end = (start_idx + count).min(all_lines.len());
 
-    all_lines[start..end]
+    all_lines[start_idx..end]
         .iter()
         .enumerate()
-        .map(|(i, line)| ((start + i + 1) as u64, line.to_string()))
+        .map(|(i, line)| ((start_idx + i + 1) as u64, line.to_string()))
         .collect()
 }
 
@@ -515,34 +525,66 @@ fn truncate_line_to_width(line: &str, max_width: usize) -> String {
     result
 }
 
-fn draw_input(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
-    let block = Block::default()
-        .borders(Borders::TOP)
-        .border_style(theme.style_prompt())
-        .style(theme.style_fg());
+fn draw_status_bar(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Fill(1),  // left: mode bubble + info
+            Constraint::Fill(2),  // middle: hints
+            Constraint::Fill(1),  // right: version / stats
+        ])
+        .split(area);
 
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    // Left: mode bubble
+    let mut left_spans = vec![Span::raw(" ")];
+    left_spans.push(Span::styled(
+        " FFF ",
+        theme.style_mode_active(),
+    ));
+    left_spans.push(Span::styled(
+        format!("  {} files", state.total_files),
+        theme.style_status(),
+    ));
 
-    let prompt = "> ";
-    let prompt_width = prompt.width();
-    let query = &state.query;
+    frame.render_widget(
+        Paragraph::new(Line::from(left_spans)).alignment(Alignment::Left),
+        chunks[0],
+    );
 
-    // Simple cursor positioning: place cursor at end of query for now
-    let cursor_x = inner.x + prompt_width as u16 + query.width() as u16;
-
-    let spans = vec![
-        Span::styled(prompt, theme.style_prompt()),
-        Span::styled(query.clone(), theme.style_fg()),
+    // Middle: hints
+    let mut hints = vec![
+        Span::styled("ctrl-c", Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD)),
+        Span::styled(": quit  ", theme.style_status()),
+        Span::styled("tab", Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD)),
+        Span::styled(": preview  ", theme.style_status()),
+        Span::styled("↑↓", Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD)),
+        Span::styled(": navigate", theme.style_status()),
     ];
 
-    let para = Paragraph::new(Line::from(spans));
-    frame.render_widget(para, inner);
-
-    // Draw cursor
-    if cursor_x < inner.x + inner.width {
-        frame.set_cursor_position((cursor_x, inner.y));
+    // Add scope indicator
+    let scope_label = match state.search_scope {
+        SearchScope::Unified => "",
+        SearchScope::FileOnly => "  [files]",
+        SearchScope::GrepOnly => "  [grep]",
+    };
+    if !scope_label.is_empty() {
+        hints.push(Span::styled(scope_label, theme.style_dim()));
     }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(hints)).alignment(Alignment::Center),
+        chunks[1],
+    );
+
+    // Right: match count + version
+    let right_spans = vec![Span::styled(
+        format!("{} matches  v0.1.0 ", state.total_matched),
+        theme.style_status(),
+    )];
+    frame.render_widget(
+        Paragraph::new(Line::from(right_spans)).alignment(Alignment::Right),
+        chunks[2],
+    );
 }
 
 #[cfg(test)]
@@ -585,8 +627,8 @@ mod tests {
 
         let text = buffer_to_string(terminal.backend().buffer());
         assert!(
-            text.contains("Scanning…"),
-            "expected 'Scanning…' in:\n{text}"
+            text.contains("scanning…"),
+            "expected 'scanning…' in title:\n{text}"
         );
         assert!(
             text.contains("Scanning files…"),
@@ -615,8 +657,8 @@ mod tests {
 
         let text = buffer_to_string(terminal.backend().buffer());
         assert!(
-            text.contains("Ready | 42 files | 1 matches"),
-            "expected status bar in:\n{text}"
+            text.contains("Results"),
+            "expected results title in:\n{text}"
         );
         assert!(
             text.contains("src/main.rs"),
@@ -625,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn test_file_badge_rendered() {
+    fn test_selection_pointer_rendered() {
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         let results = vec![UnifiedResult {
@@ -645,13 +687,13 @@ mod tests {
 
         let text = buffer_to_string(terminal.backend().buffer());
         assert!(
-            text.contains("[FILE]"),
-            "expected [FILE] badge in:\n{text}"
+            text.contains("> "),
+            "expected selection pointer in:\n{text}"
         );
     }
 
     #[test]
-    fn test_line_badge_and_meta_rendered() {
+    fn test_line_result_and_meta_rendered() {
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         let results = vec![UnifiedResult {
@@ -671,20 +713,15 @@ mod tests {
 
         let text = buffer_to_string(terminal.backend().buffer());
         assert!(
-            text.contains("[LINE]"),
-            "expected [LINE] badge in:\n{text}"
-        );
-        assert!(
             text.contains("Cargo.toml:83"),
             "expected line meta in:\n{text}"
         );
     }
 
     #[test]
-    fn test_preview_pane_shown_for_line_result_and_wide_terminal() {
+    fn test_preview_pane_shown_for_wide_terminal() {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        // Use a file that exists in this repo so preview can read it
         let results = vec![UnifiedResult {
             kind: MatchKind::Line,
             relative_path: "Cargo.toml".into(),
@@ -704,36 +741,9 @@ mod tests {
         terminal.draw(|f| draw(f, &state, &Theme::default())).unwrap();
 
         let text = buffer_to_string(terminal.backend().buffer());
-        // The preview pane should show file content and a gutter line number
         assert!(
-            text.contains("1 ") || text.contains("[package]"),
-            "expected preview pane content in:\n{text}"
-        );
-    }
-
-    #[test]
-    fn test_mode_buttons_rendered() {
-        let backend = TestBackend::new(80, 10);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut state = make_state(false, 10, 1, vec![]);
-        state.search_mode.case_sensitive = true;
-        state.search_mode.regex = true;
-        state.search_scope = SearchScope::GrepOnly;
-
-        terminal.draw(|f| draw(f, &state, &Theme::default())).unwrap();
-
-        let text = buffer_to_string(terminal.backend().buffer());
-        assert!(
-            text.contains("Cc"),
-            "expected 'Cc' mode button in:\n{text}"
-        );
-        assert!(
-            text.contains(".*"),
-            "expected '.*' mode button in:\n{text}"
-        );
-        assert!(
-            text.contains("[G]"),
-            "expected '[G]' scope indicator in:\n{text}"
+            text.contains("Cargo.toml"),
+            "expected preview title in:\n{text}"
         );
     }
 
@@ -759,10 +769,9 @@ mod tests {
 
         let text = buffer_to_string(terminal.backend().buffer());
         // Preview should be hidden; result list spans full width
-        // We can't easily assert absence, but we can assert the badge is present
         assert!(
-            text.contains("[LINE]"),
-            "expected [LINE] badge in:\n{text}"
+            text.contains("Results"),
+            "expected Results title in:\n{text}"
         );
     }
 }

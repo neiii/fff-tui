@@ -67,6 +67,79 @@ fn char_at_byte_len(s: &str, byte_pos: usize) -> usize {
         .unwrap_or(1)
 }
 
+// ─── Syntax highlighting via syntect ────────────────────────────────────────
+
+use std::sync::OnceLock;
+
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span, Text};
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{Style as SyntectStyle, ThemeSet};
+use syntect::parsing::SyntaxSet;
+use syntect::util::LinesWithEndings;
+
+static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
+static THEME_SET: OnceLock<ThemeSet> = OnceLock::new();
+
+fn syntax_set() -> &'static SyntaxSet {
+    SYNTAX_SET.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+fn theme_set() -> &'static ThemeSet {
+    THEME_SET.get_or_init(ThemeSet::load_defaults)
+}
+
+/// Highlight file content with syntect. Returns plain text if highlighting fails.
+pub fn highlight_content(path: &str, content: &str) -> Text<'static> {
+    let ss = syntax_set();
+    let ts = theme_set();
+
+    let syntax = ss
+        .find_syntax_for_file(path)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| ss.find_syntax_plain_text());
+
+    let theme = ts.themes.get("base16-ocean.dark").unwrap_or_else(|| {
+        ts.themes.values().next().expect("no default themes")
+    });
+
+    let mut highlighter = HighlightLines::new(syntax, theme);
+
+    let mut lines = Vec::new();
+    for line in LinesWithEndings::from(content) {
+        match highlighter.highlight_line(line, ss) {
+            Ok(regions) => {
+                let spans: Vec<Span> = regions
+                    .into_iter()
+                    .map(|(style, text)| span_from_syntect(style, text))
+                    .collect();
+                lines.push(Line::from(spans));
+            }
+            Err(_) => {
+                lines.push(Line::from(line.trim_end_matches('\n').to_string()));
+            }
+        }
+    }
+
+    Text::from(lines)
+}
+
+fn span_from_syntect(style: SyntectStyle, text: &str) -> Span<'static> {
+    let fg = Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
+    let mut ratatui_style = Style::default().fg(fg);
+    if style.font_style.contains(syntect::highlighting::FontStyle::BOLD) {
+        ratatui_style = ratatui_style.add_modifier(Modifier::BOLD);
+    }
+    if style.font_style.contains(syntect::highlighting::FontStyle::ITALIC) {
+        ratatui_style = ratatui_style.add_modifier(Modifier::ITALIC);
+    }
+    if style.font_style.contains(syntect::highlighting::FontStyle::UNDERLINE) {
+        ratatui_style = ratatui_style.add_modifier(Modifier::UNDERLINED);
+    }
+    Span::styled(text.to_string(), ratatui_style)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,5 +159,11 @@ mod tests {
             indices_to_ranges(&[0, 5, 7], "alphabetical"),
             vec![(0, 1), (5, 6), (7, 8)]
         );
+    }
+
+    #[test]
+    fn test_highlight_content_basic() {
+        let text = highlight_content("test.rs", "fn main() {}");
+        assert!(!text.lines.is_empty());
     }
 }
