@@ -246,6 +246,10 @@ impl App {
                             }
                             self.refresh_search(backend);
                         }
+                        'm' => {
+                            self.cycle_grep_mode();
+                            self.refresh_search(backend);
+                        }
                         _ => {}
                     }
                 } else {
@@ -348,5 +352,17 @@ impl App {
 
     fn deselect_all(&mut self) {
         self.selected_items.clear();
+    }
+
+    fn cycle_grep_mode(&mut self) {
+        // plain -> regex -> fuzzy -> plain
+        if self.search_mode.regex {
+            self.search_mode.regex = false;
+            self.search_mode.fuzzy = true;
+        } else if self.search_mode.fuzzy {
+            self.search_mode.fuzzy = false;
+        } else {
+            self.search_mode.regex = true;
+        }
     }
 }

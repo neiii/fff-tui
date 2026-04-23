@@ -799,9 +799,18 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme
         chunks[1],
     );
 
-    // Right: match count + version
+    // Right: match count + grep mode + version
+    let mode_label = if state.search_scope != SearchScope::FileOnly {
+        match (state.search_mode.regex, state.search_mode.fuzzy) {
+            (true, _) => " regex",
+            (_, true) => " fuzzy",
+            _ => " plain",
+        }
+    } else {
+        ""
+    };
     let right_spans = vec![Span::styled(
-        format!("{} matches  v0.1.0 ", state.total_matched),
+        format!("{} matches{}  v0.1.0 ", state.total_matched, mode_label),
         theme.style_status(),
     )];
     frame.render_widget(
@@ -1216,6 +1225,23 @@ mod tests {
         assert!(
             text.contains("▊"),
             "expected multi-select marker in:\n{text}"
+        );
+    }
+
+    #[test]
+    fn test_grep_mode_indicator_in_status_bar() {
+        let backend = TestBackend::new(120, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let results = vec![];
+        let mut state = make_state(false, 10, 0, results);
+        state.search_mode.regex = true;
+
+        terminal.draw(|f| draw(f, &state, &Theme::default())).unwrap();
+
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(
+            text.contains("regex"),
+            "expected regex mode indicator in status bar:\n{text}"
         );
     }
 }

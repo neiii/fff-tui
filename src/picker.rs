@@ -12,6 +12,7 @@ pub struct SearchMode {
     pub regex: bool,
     pub fixed_strings: bool,
     pub group_grep: bool,
+    pub fuzzy: bool,
 }
 
 /// Which result types to include in a search.
@@ -199,7 +200,9 @@ impl PickerBackend {
         let mut searchable_files = 0usize;
 
         if scope != SearchScope::FileOnly && !highlight_query.is_empty() {
-            let grep_mode = if mode.regex {
+            let grep_mode = if mode.fuzzy {
+                GrepMode::Fuzzy
+            } else if mode.regex {
                 GrepMode::Regex
             } else {
                 GrepMode::PlainText
