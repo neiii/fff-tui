@@ -48,6 +48,11 @@ impl PickerBackend {
         })
     }
 
+    /// Block until the background filesystem scan finishes (or timeout).
+    pub fn wait_for_scan(&self, timeout: std::time::Duration) -> bool {
+        self.shared_picker.wait_for_scan(timeout)
+    }
+
     pub fn is_scanning(&self) -> bool {
         self.shared_picker
             .read()

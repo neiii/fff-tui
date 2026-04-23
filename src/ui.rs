@@ -78,7 +78,9 @@ fn draw_results(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
     let selected_idx = state.selected.min(state.results.len().saturating_sub(1));
 
     if visible_count == 0 || state.results.is_empty() {
-        let placeholder = if state.query.is_empty() {
+        let placeholder = if state.is_scanning && state.results.is_empty() {
+            "Scanning files…"
+        } else if state.query.is_empty() {
             "Type to search files…"
         } else {
             "No matches found"
@@ -185,5 +187,70 @@ fn draw_input(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
     // Draw cursor
     if cursor_x < inner.x + inner.width {
         frame.set_cursor_position((cursor_x, inner.y));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::debug_dump::buffer_to_string;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn make_state(is_scanning: bool, files: usize, matches: usize, results: Vec<FileResult>) -> UiState {
+        UiState {
+            query: String::new(),
+            highlight_query: String::new(),
+            results,
+            selected: 0,
+            scroll_offset: 0,
+            total_files: files,
+            total_matched: matches,
+            is_scanning,
+            spinner_frame: 0,
+        }
+    }
+
+    #[test]
+    fn test_scanning_placeholder() {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let state = make_state(true, 0, 0, vec![]);
+
+        terminal.draw(|f| draw(f, &state, &Theme::default())).unwrap();
+
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(
+            text.contains("Scanning…"),
+            "expected 'Scanning…' in:\n{text}"
+        );
+        assert!(
+            text.contains("Scanning files…"),
+            "expected 'Scanning files…' placeholder in:\n{text}"
+        );
+    }
+
+    #[test]
+    fn test_ready_with_results() {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let results = vec![FileResult {
+            relative_path: "src/main.rs".into(),
+            absolute_path: "/dev/null/src/main.rs".into(),
+            exact_match: false,
+        }];
+        let state = make_state(false, 42, 1, results);
+
+        terminal.draw(|f| draw(f, &state, &Theme::default())).unwrap();
+
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(
+            text.contains("Ready | 42 files | 1 matches"),
+            "expected status bar in:\n{text}"
+        );
+        assert!(
+            text.contains("src/main.rs"),
+            "expected result row in:\n{text}"
+        );
     }
 }

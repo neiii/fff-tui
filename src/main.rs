@@ -1,4 +1,5 @@
 mod app;
+mod debug_dump;
 mod highlight;
 mod picker;
 mod theme;

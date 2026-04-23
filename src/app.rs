@@ -18,6 +18,7 @@ pub struct App {
     pub spinner_frame: usize,
     pub last_spinner_tick: Instant,
     pub terminal_height: u16,
+    pub last_search_refresh: Instant,
 }
 
 impl App {
@@ -35,6 +36,7 @@ impl App {
             spinner_frame: 0,
             last_spinner_tick: Instant::now(),
             terminal_height: 24,
+            last_search_refresh: Instant::now(),
         }
     }
 
@@ -43,30 +45,25 @@ impl App {
         terminal: &mut Terminal<crate::tui::Backend>,
         backend: &PickerBackend,
     ) -> anyhow::Result<Option<String>> {
-        // Initial search (empty query shows all files sorted by frecency)
-        self.refresh_search(backend);
-        self.total_files = backend.total_files();
-
         let tick_rate = Duration::from_millis(50);
+        let scan_timeout = Duration::from_secs(5);
+        let scan_start = Instant::now();
+        let mut dump_frame = 0usize;
 
-        while !self.should_quit && !self.should_select {
-            // Update spinner
+        // Phase 1: wait for the initial filesystem scan (with timeout).
+        // Draw a spinner so the user sees activity instead of "0 files".
+        while backend.is_scanning() && scan_start.elapsed() < scan_timeout {
             if self.last_spinner_tick.elapsed() > Duration::from_millis(80) {
                 self.spinner_frame += 1;
                 self.last_spinner_tick = Instant::now();
             }
 
-            // Check if scan finished
-            if backend.is_scanning() {
-                self.total_files = backend.total_files();
-            }
+            self.total_files = backend.total_files();
 
-            // Update terminal size for scroll calculations
             if let Ok(size) = terminal.size() {
                 self.terminal_height = size.height;
             }
 
-            // Draw
             let ui_state = UiState {
                 query: self.query.clone(),
                 highlight_query: self.highlight_query.clone(),
@@ -75,12 +72,74 @@ impl App {
                 scroll_offset: self.scroll_offset,
                 total_files: self.total_files,
                 total_matched: self.total_matched,
-                is_scanning: backend.is_scanning(),
+                is_scanning: true,
                 spinner_frame: self.spinner_frame,
             };
-            terminal.draw(|f| draw(f, &ui_state, &Theme::default()))?;
+            terminal.draw(|f| {
+                draw(f, &ui_state, &Theme::default());
+                crate::debug_dump::dump_buffer(&*f.buffer_mut(), dump_frame);
+                dump_frame += 1;
+            })?;
 
-            // Handle events
+            if event::poll(tick_rate)? {
+                match event::read()? {
+                    Event::Key(key) => {
+                        if key.code == KeyCode::Esc
+                            || (key.code == KeyCode::Char('c')
+                                && key.modifiers.contains(KeyModifiers::CONTROL))
+                            || (key.code == KeyCode::Char('d')
+                                && key.modifiers.contains(KeyModifiers::CONTROL))
+                        {
+                            self.should_quit = true;
+                            return Ok(None);
+                        }
+                    }
+                    Event::Resize(_, height) => self.terminal_height = height,
+                    _ => {}
+                }
+            }
+        }
+
+        // Initial search now that the scan has finished (or timed out).
+        self.refresh_search(backend);
+
+        while !self.should_quit && !self.should_select {
+            if self.last_spinner_tick.elapsed() > Duration::from_millis(80) {
+                self.spinner_frame += 1;
+                self.last_spinner_tick = Instant::now();
+            }
+
+            let is_scanning = backend.is_scanning();
+
+            // Refresh search periodically while scanning so files appear incrementally
+            if is_scanning {
+                self.total_files = backend.total_files();
+                if self.last_search_refresh.elapsed() > Duration::from_millis(200) {
+                    self.refresh_search(backend);
+                }
+            }
+
+            if let Ok(size) = terminal.size() {
+                self.terminal_height = size.height;
+            }
+
+            let ui_state = UiState {
+                query: self.query.clone(),
+                highlight_query: self.highlight_query.clone(),
+                results: self.results.clone(),
+                selected: self.selected,
+                scroll_offset: self.scroll_offset,
+                total_files: self.total_files,
+                total_matched: self.total_matched,
+                is_scanning,
+                spinner_frame: self.spinner_frame,
+            };
+            terminal.draw(|f| {
+                draw(f, &ui_state, &Theme::default());
+                crate::debug_dump::dump_buffer(&*f.buffer_mut(), dump_frame);
+                dump_frame += 1;
+            })?;
+
             if event::poll(tick_rate)? {
                 match event::read()? {
                     Event::Key(key) => self.handle_key(key, backend),
@@ -153,9 +212,11 @@ impl App {
         let output = backend.search(&self.query, limit);
         self.results = output.results;
         self.total_matched = output.total_matched;
+        self.total_files = backend.total_files();
         self.highlight_query = output.highlight_query;
         self.selected = 0;
         self.scroll_offset = 0;
+        self.last_search_refresh = Instant::now();
     }
 
     fn move_selection(&mut self, delta: isize) {
