@@ -29,6 +29,8 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             app.last_spinner_tick = Instant::now();
         }
         app.total_files = backend.total_files();
+        app.terminal_width = 120;
+        app.terminal_height = 40;
 
         let ui_state = UiState {
             query: app.query.clone(),
@@ -40,6 +42,7 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             total_matched: app.total_matched,
             is_scanning: true,
             spinner_frame: app.spinner_frame,
+            terminal_width: app.terminal_width,
         };
         terminal
             .draw(|f| {
@@ -66,6 +69,7 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             app.refresh_search(backend);
         }
         app.terminal_height = 40;
+        app.terminal_width = 120;
 
         let ui_state = UiState {
             query: app.query.clone(),
@@ -77,6 +81,7 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             total_matched: app.total_matched,
             is_scanning,
             spinner_frame: app.spinner_frame,
+            terminal_width: app.terminal_width,
         };
         terminal
             .draw(|f| {
@@ -103,6 +108,7 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             total_matched: app.total_matched,
             is_scanning: backend.is_scanning(),
             spinner_frame: app.spinner_frame,
+            terminal_width: app.terminal_width,
         };
         terminal
             .draw(|f| {

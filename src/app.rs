@@ -18,6 +18,7 @@ pub struct App {
     pub spinner_frame: usize,
     pub last_spinner_tick: Instant,
     pub terminal_height: u16,
+    pub terminal_width: u16,
     pub last_search_refresh: Instant,
 }
 
@@ -36,6 +37,7 @@ impl App {
             spinner_frame: 0,
             last_spinner_tick: Instant::now(),
             terminal_height: 24,
+            terminal_width: 80,
             last_search_refresh: Instant::now(),
         }
     }
@@ -62,6 +64,7 @@ impl App {
 
             if let Ok(size) = terminal.size() {
                 self.terminal_height = size.height;
+                self.terminal_width = size.width;
             }
 
             let ui_state = UiState {
@@ -74,6 +77,7 @@ impl App {
                 total_matched: self.total_matched,
                 is_scanning: true,
                 spinner_frame: self.spinner_frame,
+                terminal_width: self.terminal_width,
             };
             terminal.draw(|f| {
                 draw(f, &ui_state, &Theme::default());
@@ -94,7 +98,10 @@ impl App {
                             return Ok(None);
                         }
                     }
-                    Event::Resize(_, height) => self.terminal_height = height,
+                    Event::Resize(width, height) => {
+                        self.terminal_width = width;
+                        self.terminal_height = height;
+                    }
                     _ => {}
                 }
             }
@@ -121,6 +128,7 @@ impl App {
 
             if let Ok(size) = terminal.size() {
                 self.terminal_height = size.height;
+                self.terminal_width = size.width;
             }
 
             let ui_state = UiState {
@@ -133,6 +141,7 @@ impl App {
                 total_matched: self.total_matched,
                 is_scanning,
                 spinner_frame: self.spinner_frame,
+                terminal_width: self.terminal_width,
             };
             terminal.draw(|f| {
                 draw(f, &ui_state, &Theme::default());
@@ -143,7 +152,8 @@ impl App {
             if event::poll(tick_rate)? {
                 match event::read()? {
                     Event::Key(key) => self.handle_key(key, backend),
-                    Event::Resize(_, height) => {
+                    Event::Resize(width, height) => {
+                        self.terminal_width = width;
                         self.terminal_height = height;
                         self.ensure_visible();
                     }
