@@ -81,6 +81,8 @@ impl SearchOutput {
 /// Wrapper around fff-core's FilePicker that provides a sync API for the TUI.
 pub struct PickerBackend {
     shared_picker: SharedPicker,
+    shared_frecency: SharedFrecency,
+    shared_query_tracker: SharedQueryTracker,
     base_path: PathBuf,
 }
 
@@ -88,8 +90,35 @@ impl PickerBackend {
     pub fn new(base_path: &str) -> anyhow::Result<Self> {
         let canonical = std::fs::canonicalize(base_path)?;
         let shared_picker = SharedPicker::default();
-        let shared_frecency = SharedFrecency::noop();
-        let _shared_query_tracker = SharedQueryTracker::noop();
+
+        // Try to initialize real frecency + query tracker DBs
+        let cache_dir = dirs::cache_dir().map(|d| d.join("fff"));
+        let (shared_frecency, shared_query_tracker) = if let Some(ref cache) = cache_dir {
+            let frecency_path = cache.join("frecency");
+            let query_path = cache.join("queries");
+            let frecency = SharedFrecency::default();
+            let queries = SharedQueryTracker::default();
+
+            let frecency_ok = std::fs::create_dir_all(&frecency_path)
+                .is_ok()
+                && fff_search::FrecencyTracker::new(&frecency_path, true)
+                    .and_then(|t| frecency.init(t))
+                    .is_ok();
+
+            let queries_ok = std::fs::create_dir_all(&query_path)
+                .is_ok()
+                && fff_search::QueryTracker::new(&query_path, true)
+                    .and_then(|t| queries.init(t))
+                    .is_ok();
+
+            if frecency_ok && queries_ok {
+                (frecency, queries)
+            } else {
+                (SharedFrecency::noop(), SharedQueryTracker::noop())
+            }
+        } else {
+            (SharedFrecency::noop(), SharedQueryTracker::noop())
+        };
 
         FilePicker::new_with_shared_state(
             shared_picker.clone(),
@@ -103,6 +132,8 @@ impl PickerBackend {
 
         Ok(Self {
             shared_picker,
+            shared_frecency,
+            shared_query_tracker,
             base_path: canonical,
         })
     }
@@ -128,6 +159,42 @@ impl PickerBackend {
             .unwrap_or(0)
     }
 
+    pub fn track_access(&self, path: &str) {
+        let Ok(guard) = self.shared_frecency.read() else {
+            return;
+        };
+        let Some(tracker) = guard.as_ref() else {
+            return;
+        };
+        let _ = tracker.track_access(std::path::Path::new(path));
+    }
+
+    pub fn track_query_completion(&self, query: &str, file_path: &str) {
+        let Ok(mut guard) = self.shared_query_tracker.write() else {
+            return;
+        };
+        let Some(tracker) = guard.as_mut() else {
+            return;
+        };
+        let _ = tracker.track_query_completion(
+            query,
+            &self.base_path,
+            std::path::Path::new(file_path),
+        );
+    }
+
+    pub fn get_historical_query(&self, offset: usize) -> Option<String> {
+        let guard = self.shared_query_tracker.read().ok()?;
+        let tracker = guard.as_ref()?;
+        tracker.get_historical_query(&self.base_path, offset).ok().flatten()
+    }
+
+    pub fn get_historical_grep_query(&self, offset: usize) -> Option<String> {
+        let guard = self.shared_query_tracker.read().ok()?;
+        let tracker = guard.as_ref()?;
+        tracker.get_historical_grep_query(&self.base_path, offset).ok().flatten()
+    }
+
     /// Perform a unified search (fuzzy file + content grep) and return owned results.
     pub fn search(
         &self,
@@ -135,6 +202,7 @@ impl PickerBackend {
         mode: SearchMode,
         scope: SearchScope,
         current_file: Option<&str>,
+        force_combo: bool,
         limit: usize,
     ) -> SearchOutput {
         let guard = match self.shared_picker.read() {
@@ -163,15 +231,21 @@ impl PickerBackend {
         let mut total_matched = 0usize;
 
         if scope != SearchScope::GrepOnly {
+            let qt_guard = match self.shared_query_tracker.read() {
+                Ok(g) => g,
+                Err(_) => return SearchOutput::empty(query),
+            };
+            let qt_ref = qt_guard.as_ref();
+
             let fuzzy_results = picker.fuzzy_search(
                 &parsed,
-                None, // no query tracker for now
+                qt_ref,
                 FuzzySearchOptions {
                     max_threads: 0, // auto
                     current_file,
                     project_path: Some(&self.base_path),
-                    combo_boost_score_multiplier: 0,
-                    min_combo_count: 0,
+                    combo_boost_score_multiplier: if force_combo { 1 } else { 0 },
+                    min_combo_count: if force_combo { 0 } else { 0 },
                     pagination: PaginationArgs { offset: 0, limit },
                 },
             );
@@ -311,7 +385,7 @@ mod tests {
         let backend = PickerBackend::new(".").unwrap();
         // Wait for scan
         std::thread::sleep(std::time::Duration::from_millis(1000));
-        let output = backend.search("", SearchMode::default(), SearchScope::default(), None, 50);
+        let output = backend.search("", SearchMode::default(), SearchScope::default(), None, false, 50);
         assert!(output.total_matched > 0 || backend.is_scanning());
     }
 
@@ -319,7 +393,7 @@ mod tests {
     fn test_search_with_query() {
         let backend = PickerBackend::new(".").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1000));
-        let output = backend.search("main", SearchMode::default(), SearchScope::default(), None, 50);
+        let output = backend.search("main", SearchMode::default(), SearchScope::default(), None, false, 50);
         // Should find src/main.rs or similar
         let has_main = output.results.iter().any(|r| {
             r.relative_path.contains("main")

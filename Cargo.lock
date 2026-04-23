@@ -709,6 +709,7 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm 0.28.1",
+ "dirs",
  "fff-search",
  "parking_lot",
  "ratatui",

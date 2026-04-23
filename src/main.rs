@@ -105,6 +105,14 @@ fn main() {
 
     match result {
         Ok(Some(results)) => {
+            // Track frecency + query history
+            for result in &results {
+                backend.track_access(&result.absolute_path);
+                if !app.query.is_empty() {
+                    backend.track_query_completion(&app.query, &result.absolute_path);
+                }
+            }
+
             if cli.space_separated && results.len() > 1 {
                 let outputs: Vec<String> = results
                     .iter()

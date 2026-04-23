@@ -27,6 +27,8 @@ pub struct App {
     pub preview_enabled: bool,
     pub path_shorten_strategy: String,
     pub current_file: Option<String>,
+    pub force_combo_boost: bool,
+    pub query_history_offset: usize,
 }
 
 impl App {
@@ -52,6 +54,8 @@ impl App {
             preview_enabled: true,
             path_shorten_strategy: "middle_number".into(),
             current_file: None,
+            force_combo_boost: false,
+            query_history_offset: 0,
         }
     }
 
@@ -276,8 +280,20 @@ impl App {
             }
             KeyCode::Tab => self.toggle_selection(),
             KeyCode::Esc => self.should_quit = true,
-            KeyCode::Up => self.move_selection(-1),
-            KeyCode::Down => self.move_selection(1),
+            KeyCode::Up => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    self.cycle_query_history(-1, backend);
+                } else {
+                    self.move_selection(-1);
+                }
+            }
+            KeyCode::Down => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    self.cycle_query_history(1, backend);
+                } else {
+                    self.move_selection(1);
+                }
+            }
             KeyCode::PageUp => self.move_selection_page(-1),
             KeyCode::PageDown => self.move_selection_page(1),
             KeyCode::Home => {
@@ -299,6 +315,7 @@ impl App {
             self.search_mode,
             self.search_scope,
             self.current_file.as_deref(),
+            self.force_combo_boost,
             limit,
         );
         self.results = output.results;
@@ -375,6 +392,36 @@ impl App {
             self.search_mode.fuzzy = false;
         } else {
             self.search_mode.regex = true;
+        }
+    }
+
+    fn cycle_query_history(&mut self, delta: isize, backend: &PickerBackend) {
+        let is_grep = self.search_scope == SearchScope::GrepOnly;
+        let new_offset = if delta < 0 {
+            self.query_history_offset + 1
+        } else {
+            self.query_history_offset.saturating_sub(1)
+        };
+
+        if new_offset == self.query_history_offset && delta > 0 {
+            // Already at 0, clear query
+            self.query.clear();
+            self.force_combo_boost = false;
+            self.refresh_search(backend);
+            return;
+        }
+
+        let query = if is_grep {
+            backend.get_historical_grep_query(new_offset)
+        } else {
+            backend.get_historical_query(new_offset)
+        };
+
+        if let Some(q) = query {
+            self.query = q;
+            self.force_combo_boost = true;
+            self.query_history_offset = new_offset;
+            self.refresh_search(backend);
         }
     }
 }
