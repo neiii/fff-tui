@@ -129,7 +129,14 @@ impl PickerBackend {
     }
 
     /// Perform a unified search (fuzzy file + content grep) and return owned results.
-    pub fn search(&self, query: &str, mode: SearchMode, scope: SearchScope, limit: usize) -> SearchOutput {
+    pub fn search(
+        &self,
+        query: &str,
+        mode: SearchMode,
+        scope: SearchScope,
+        current_file: Option<&str>,
+        limit: usize,
+    ) -> SearchOutput {
         let guard = match self.shared_picker.read() {
             Ok(g) => g,
             Err(_) => return SearchOutput::empty(query),
@@ -161,7 +168,7 @@ impl PickerBackend {
                 None, // no query tracker for now
                 FuzzySearchOptions {
                     max_threads: 0, // auto
-                    current_file: None,
+                    current_file,
                     project_path: Some(&self.base_path),
                     combo_boost_score_multiplier: 0,
                     min_combo_count: 0,
@@ -304,7 +311,7 @@ mod tests {
         let backend = PickerBackend::new(".").unwrap();
         // Wait for scan
         std::thread::sleep(std::time::Duration::from_millis(1000));
-        let output = backend.search("", SearchMode::default(), SearchScope::default(), 50);
+        let output = backend.search("", SearchMode::default(), SearchScope::default(), None, 50);
         assert!(output.total_matched > 0 || backend.is_scanning());
     }
 
@@ -312,7 +319,7 @@ mod tests {
     fn test_search_with_query() {
         let backend = PickerBackend::new(".").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1000));
-        let output = backend.search("main", SearchMode::default(), SearchScope::default(), 50);
+        let output = backend.search("main", SearchMode::default(), SearchScope::default(), None, 50);
         // Should find src/main.rs or similar
         let has_main = output.results.iter().any(|r| {
             r.relative_path.contains("main")

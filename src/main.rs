@@ -43,6 +43,10 @@ struct Cli {
     /// Path shortening strategy for long directories.
     #[arg(long, value_name = "STRATEGY", default_value = "middle_number")]
     path_shorten: String,
+
+    /// Deprioritize the active editor file in fuzzy search scoring.
+    #[arg(long, value_name = "PATH")]
+    current_file: Option<String>,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -93,6 +97,7 @@ fn main() {
     let mut app = App::new();
     app.search_mode.group_grep = cli.group;
     app.path_shorten_strategy = cli.path_shorten;
+    app.current_file = cli.current_file;
     let result = app.run(&mut terminal, &backend);
 
     // Restore terminal regardless of result

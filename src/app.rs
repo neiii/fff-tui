@@ -26,6 +26,7 @@ pub struct App {
     pub search_scope: SearchScope,
     pub preview_enabled: bool,
     pub path_shorten_strategy: String,
+    pub current_file: Option<String>,
 }
 
 impl App {
@@ -50,6 +51,7 @@ impl App {
             search_scope: SearchScope::default(),
             preview_enabled: true,
             path_shorten_strategy: "middle_number".into(),
+            current_file: None,
         }
     }
 
@@ -292,7 +294,13 @@ impl App {
 
     pub(crate) fn refresh_search(&mut self, backend: &PickerBackend) {
         let limit = 500; // fetch enough for smooth scrolling
-        let output = backend.search(&self.query, self.search_mode, self.search_scope, limit);
+        let output = backend.search(
+            &self.query,
+            self.search_mode,
+            self.search_scope,
+            self.current_file.as_deref(),
+            limit,
+        );
         self.results = output.results;
         self.total_matched = output.total_matched;
         self.total_files = backend.total_files();
