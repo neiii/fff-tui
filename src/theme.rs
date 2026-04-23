@@ -16,6 +16,12 @@ pub struct Theme {
     pub preview_title_fg: Color,
     pub mode_bg: Color,
     pub mode_fg: Color,
+    pub git_modified_fg: Color,
+    pub git_added_fg: Color,
+    pub git_untracked_fg: Color,
+    pub git_deleted_fg: Color,
+    pub git_renamed_fg: Color,
+    pub git_ignored_fg: Color,
 }
 
 impl Default for Theme {
@@ -41,6 +47,12 @@ impl Theme {
             preview_title_fg: Color::LightMagenta,
             mode_bg: Color::Green,
             mode_fg: Color::Black,
+            git_modified_fg: Color::Yellow,
+            git_added_fg: Color::Green,
+            git_untracked_fg: Color::Red,
+            git_deleted_fg: Color::Red,
+            git_renamed_fg: Color::Magenta,
+            git_ignored_fg: Color::DarkGray,
         }
     }
 

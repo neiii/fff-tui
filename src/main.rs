@@ -35,6 +35,10 @@ struct Cli {
     /// Group grep results by file (shows :line:col gutter on the left).
     #[arg(long)]
     group: bool,
+
+    /// Output multiple selections space-separated on a single line.
+    #[arg(long)]
+    space_separated: bool,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -91,9 +95,17 @@ fn main() {
 
     match result {
         Ok(Some(results)) => {
-            for result in &results {
-                let output = format_result(result, cli.line, cli.column);
-                println!("{output}");
+            if cli.space_separated && results.len() > 1 {
+                let outputs: Vec<String> = results
+                    .iter()
+                    .map(|r| format_result(r, cli.line, cli.column))
+                    .collect();
+                println!("{}", outputs.join(" "));
+            } else {
+                for result in &results {
+                    let output = format_result(result, cli.line, cli.column);
+                    println!("{output}");
+                }
             }
             process::exit(0);
         }
@@ -131,13 +143,7 @@ mod tests {
             kind: crate::picker::MatchKind::File,
             relative_path: "src/main.rs".into(),
             absolute_path: "/dev/null/src/main.rs".into(),
-            score: 0,
-            exact_match: false,
-            line_number: None,
-            column: None,
-            line_content: None,
-            match_byte_offsets: None,
-            is_definition: None,
+            ..Default::default()
         }
     }
 
@@ -146,13 +152,12 @@ mod tests {
             kind: crate::picker::MatchKind::Line,
             relative_path: "Cargo.toml".into(),
             absolute_path: "/dev/null/Cargo.toml".into(),
-            score: 0,
-            exact_match: false,
             line_number: Some(817),
             column: Some(1),
             line_content: Some(r#"path = "television/main.rs""#.into()),
             match_byte_offsets: Some(vec![(0, 4)]),
             is_definition: Some(false),
+            ..Default::default()
         }
     }
 

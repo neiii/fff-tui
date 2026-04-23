@@ -5,7 +5,7 @@ use crate::theme::Theme;
 use std::collections::HashSet;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Padding as RatatuiPadding, Paragraph},
     Frame,
@@ -227,9 +227,10 @@ fn build_result_line(
 
     let mut spans: Vec<Span<'static>> = Vec::new();
 
-    // Selection pointer + multi-select marker
+    // Selection pointer + multi-select marker + git badge
     let pointer = if is_selected { ">" } else { " " };
     let marker = if is_marked { "▊" } else { " " };
+    let (git_char, git_color) = git_badge(result.git_status.as_deref(), theme);
     let pointer_style = if is_selected {
         Style::default().fg(theme.match_fg).add_modifier(Modifier::BOLD)
     } else {
@@ -242,8 +243,12 @@ fn build_result_line(
     };
     spans.push(Span::styled(pointer.to_string(), pointer_style));
     spans.push(Span::styled(marker.to_string(), marker_style));
+    spans.push(Span::styled(
+        git_char.to_string(),
+        Style::default().fg(git_color).add_modifier(Modifier::BOLD),
+    ));
 
-    let prefix_width = 2;
+    let prefix_width = 3;
     let content_width = available_width.saturating_sub(prefix_width);
 
     if result.kind == MatchKind::Line {
@@ -451,7 +456,7 @@ fn build_result_line(
             .filter(|d| !d.is_empty() && *d != ".")
             .unwrap_or("");
 
-        let prefix_width = 2 + icon_str.width() + 1; // pointer + icon + space
+        let prefix_width = 3 + icon_str.width() + 1; // pointer + marker + git + icon + space
         let content_width = available_width.saturating_sub(prefix_width);
 
         // Build filename spans with fuzzy highlights
@@ -522,7 +527,7 @@ fn build_result_line(
             .filter(|d| !d.is_empty() && *d != ".")
             .unwrap_or("");
 
-        let prefix_width = 2 + icon_str.width() + 1;
+        let prefix_width = 3 + icon_str.width() + 1;
         let content_width = available_width.saturating_sub(prefix_width);
 
         let mut file_spans: Vec<Span<'static>> = Vec::new();
@@ -572,6 +577,18 @@ fn build_result_line(
     }
 
     Line::from(spans)
+}
+
+fn git_badge(status: Option<&str>, theme: &Theme) -> (char, Color) {
+    match status {
+        Some("modified") => ('M', theme.git_modified_fg),
+        Some("staged_new") | Some("staged_modified") => ('A', theme.git_added_fg),
+        Some("untracked") => ('?', theme.git_untracked_fg),
+        Some("deleted") => ('D', theme.git_deleted_fg),
+        Some("renamed") => ('R', theme.git_renamed_fg),
+        Some("ignored") => ('I', theme.git_ignored_fg),
+        _ => (' ', theme.fg),
+    }
 }
 
 fn truncate_to_width(s: &str, max_width: usize) -> (&str, usize) {
@@ -885,6 +902,7 @@ mod tests {
             line_content: None,
             match_byte_offsets: None,
             is_definition: None,
+            git_status: None,
         }];
         let state = make_state(false, 42, 1, results);
 
@@ -916,6 +934,7 @@ mod tests {
             line_content: None,
             match_byte_offsets: None,
             is_definition: None,
+            git_status: None,
         }];
         let state = make_state(false, 42, 1, results);
 
@@ -948,6 +967,7 @@ mod tests {
             line_content: None,
             match_byte_offsets: None,
             is_definition: None,
+            git_status: None,
         }];
         let state = make_state(false, 10, 1, results);
 
@@ -975,6 +995,7 @@ mod tests {
             line_content: Some(r#"path = "television/main.rs""#.into()),
             match_byte_offsets: Some(vec![(0, 4)]),
             is_definition: Some(false),
+            git_status: None,
         }];
         let state = make_state(false, 10, 1, results);
 
@@ -1003,6 +1024,7 @@ mod tests {
             line_content: Some(r#"path = "television/main.rs""#.into()),
             match_byte_offsets: Some(vec![(0, 4)]),
             is_definition: Some(false),
+            git_status: None,
         }];
         let mut state = make_state(false, 10, 1, results);
         state.group_grep = true;
@@ -1040,6 +1062,7 @@ mod tests {
             line_content: Some("[package]".into()),
             match_byte_offsets: Some(vec![(1, 8)]),
             is_definition: Some(false),
+            git_status: None,
         }];
         let state = make_state(false, 10, 1, results);
 
@@ -1067,6 +1090,7 @@ mod tests {
             line_content: Some("fn main() {}".into()),
             match_byte_offsets: None,
             is_definition: Some(true),
+            git_status: None,
         }];
         let mut state = make_state(false, 10, 1, results);
         state.terminal_width = 60;
@@ -1096,6 +1120,7 @@ mod tests {
             line_content: None,
             match_byte_offsets: None,
             is_definition: None,
+            git_status: None,
         }];
         let state = make_state(false, 10, 1, results);
 
@@ -1124,6 +1149,7 @@ mod tests {
                 line_content: None,
                 match_byte_offsets: None,
                 is_definition: None,
+            git_status: None,
             },
             UnifiedResult {
                 kind: MatchKind::Line,
@@ -1136,6 +1162,7 @@ mod tests {
                 line_content: Some("pub struct App {}".into()),
                 match_byte_offsets: Some(vec![(4, 7)]),
                 is_definition: Some(true),
+                git_status: None,
             },
         ];
         let mut state = make_state(false, 10, 2, results);
@@ -1196,6 +1223,7 @@ mod tests {
                 line_content: None,
                 match_byte_offsets: None,
                 is_definition: None,
+            git_status: None,
             },
             UnifiedResult {
                 kind: MatchKind::File,
@@ -1208,6 +1236,7 @@ mod tests {
                 line_content: None,
                 match_byte_offsets: None,
                 is_definition: None,
+            git_status: None,
             },
         ];
         let mut state = make_state(false, 10, 2, results);
@@ -1242,6 +1271,28 @@ mod tests {
         assert!(
             text.contains("regex"),
             "expected regex mode indicator in status bar:\n{text}"
+        );
+    }
+
+    #[test]
+    fn test_git_badge_rendered() {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let results = vec![UnifiedResult {
+            kind: MatchKind::File,
+            relative_path: "src/main.rs".into(),
+            absolute_path: "/dev/null/src/main.rs".into(),
+            git_status: Some("modified".into()),
+            ..Default::default()
+        }];
+        let state = make_state(false, 10, 1, results);
+
+        terminal.draw(|f| draw(f, &state, &Theme::default())).unwrap();
+
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(
+            text.contains('M'),
+            "expected git modified badge 'M' in:\n{text}"
         );
     }
 }

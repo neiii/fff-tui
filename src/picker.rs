@@ -1,6 +1,7 @@
 use fff_search::{
-    file_picker::FilePicker, FilePickerOptions, FuzzySearchOptions, GrepMode, GrepSearchOptions,
-    PaginationArgs, QueryParser, SharedFrecency, SharedPicker, SharedQueryTracker,
+    file_picker::FilePicker, git::format_git_status_opt, FilePickerOptions, FuzzySearchOptions,
+    GrepMode, GrepSearchOptions, PaginationArgs, QueryParser, SharedFrecency, SharedPicker,
+    SharedQueryTracker,
 };
 use std::path::PathBuf;
 
@@ -25,8 +26,9 @@ pub enum SearchScope {
 }
 
 /// The kind of search result.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MatchKind {
+    #[default]
     File,
     Line,
     FileHeader,
@@ -41,7 +43,7 @@ pub fn selection_key(result: &UnifiedResult) -> String {
 }
 
 /// A unified search result — either a file path match or a content line match.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct UnifiedResult {
     pub kind: MatchKind,
     pub relative_path: String,
@@ -54,6 +56,7 @@ pub struct UnifiedResult {
     pub line_content: Option<String>,
     pub match_byte_offsets: Option<Vec<(u32, u32)>>,
     pub is_definition: Option<bool>,
+    pub git_status: Option<String>,
 }
 
 /// Output of a search operation.
@@ -177,11 +180,8 @@ impl PickerBackend {
                     absolute_path: absolute_path.to_string_lossy().into_owned(),
                     score: score.total,
                     exact_match: score.exact_match,
-                    line_number: None,
-                    column: None,
-                    line_content: None,
-                    match_byte_offsets: None,
-                    is_definition: None,
+                    git_status: format_git_status_opt(item.git_status).map(|s| s.to_string()),
+                    ..Default::default()
                 };
                 if score.exact_match {
                     exact_files.push(result);
@@ -242,6 +242,7 @@ impl PickerBackend {
                         m.match_byte_offsets.iter().map(|&(a, b)| (a, b)).collect(),
                     ),
                     is_definition: Some(m.is_definition),
+                    git_status: format_git_status_opt(file.git_status).map(|s| s.to_string()),
                 });
             }
         }
@@ -261,11 +262,8 @@ impl PickerBackend {
                         absolute_path: r.absolute_path.clone(),
                         score: 0,
                         exact_match: false,
-                        line_number: None,
-                        column: None,
-                        line_content: None,
-                        match_byte_offsets: None,
-                        is_definition: None,
+                        git_status: r.git_status.clone(),
+                        ..Default::default()
                     });
                     last_path = Some(r.relative_path.clone());
                 }
