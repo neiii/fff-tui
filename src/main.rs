@@ -10,7 +10,7 @@ mod ui;
 
 use app::App;
 use clap::Parser;
-use picker::PickerBackend;
+use picker::{PickerBackend, UnifiedResult};
 use std::process;
 
 #[derive(Parser, Debug)]
@@ -23,6 +23,14 @@ struct Cli {
     /// Run headlessly and dump rendered frames to the given directory (for debugging).
     #[arg(long, value_name = "DIR")]
     dump_frames: Option<String>,
+
+    /// Append line number to output for line matches (e.g., file:42).
+    #[arg(long)]
+    line: bool,
+
+    /// Append line and column to output for line matches (e.g., file:42:1).
+    #[arg(long)]
+    column: bool,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -77,8 +85,9 @@ fn main() {
     let _ = tui::restore_terminal(&mut terminal);
 
     match result {
-        Ok(Some(path)) => {
-            println!("{path}");
+        Ok(Some(result)) => {
+            let output = format_result(&result, cli.line, cli.column);
+            println!("{output}");
             process::exit(0);
         }
         Ok(None) => {
@@ -88,5 +97,94 @@ fn main() {
             eprintln!("Error: {e}");
             process::exit(1);
         }
+    }
+}
+
+fn format_result(result: &UnifiedResult, line: bool, column: bool) -> String {
+    let path = &result.absolute_path;
+    match (column, line, result.line_number) {
+        (true, _, Some(ln)) => {
+            // Column is always 1 for now (beginning of line)
+            format!("{}:{}:1", path, ln)
+        }
+        (false, true, Some(ln)) => {
+            format!("{}:{}", path, ln)
+        }
+        _ => path.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_file_result() -> UnifiedResult {
+        UnifiedResult {
+            kind: crate::picker::MatchKind::File,
+            relative_path: "src/main.rs".into(),
+            absolute_path: "/dev/null/src/main.rs".into(),
+            score: 0,
+            exact_match: false,
+            line_number: None,
+            line_content: None,
+            match_byte_offsets: None,
+            is_definition: None,
+        }
+    }
+
+    fn make_line_result() -> UnifiedResult {
+        UnifiedResult {
+            kind: crate::picker::MatchKind::Line,
+            relative_path: "Cargo.toml".into(),
+            absolute_path: "/dev/null/Cargo.toml".into(),
+            score: 0,
+            exact_match: false,
+            line_number: Some(817),
+            line_content: Some(r#"path = "television/main.rs""#.into()),
+            match_byte_offsets: Some(vec![(0, 4)]),
+            is_definition: Some(false),
+        }
+    }
+
+    #[test]
+    fn format_file_no_flags() {
+        let r = make_file_result();
+        assert_eq!(format_result(&r, false, false), "/dev/null/src/main.rs");
+    }
+
+    #[test]
+    fn format_file_with_line_flag() {
+        let r = make_file_result();
+        assert_eq!(format_result(&r, true, false), "/dev/null/src/main.rs");
+    }
+
+    #[test]
+    fn format_file_with_column_flag() {
+        let r = make_file_result();
+        assert_eq!(format_result(&r, false, true), "/dev/null/src/main.rs");
+    }
+
+    #[test]
+    fn format_line_no_flags() {
+        let r = make_line_result();
+        assert_eq!(format_result(&r, false, false), "/dev/null/Cargo.toml");
+    }
+
+    #[test]
+    fn format_line_with_line_flag() {
+        let r = make_line_result();
+        assert_eq!(format_result(&r, true, false), "/dev/null/Cargo.toml:817");
+    }
+
+    #[test]
+    fn format_line_with_column_flag() {
+        let r = make_line_result();
+        assert_eq!(format_result(&r, false, true), "/dev/null/Cargo.toml:817:1");
+    }
+
+    #[test]
+    fn format_line_with_both_flags() {
+        let r = make_line_result();
+        assert_eq!(format_result(&r, true, true), "/dev/null/Cargo.toml:817:1");
     }
 }

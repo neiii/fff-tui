@@ -52,7 +52,7 @@ impl App {
         &mut self,
         terminal: &mut Terminal<crate::tui::Backend>,
         backend: &PickerBackend,
-    ) -> anyhow::Result<Option<String>> {
+    ) -> anyhow::Result<Option<UnifiedResult>> {
         let tick_rate = Duration::from_millis(50);
         let scan_timeout = Duration::from_secs(5);
         let scan_start = Instant::now();
@@ -175,7 +175,7 @@ impl App {
         }
 
         if self.should_select {
-            Ok(self.results.get(self.selected).map(|r| r.absolute_path.clone()))
+            Ok(self.results.get(self.selected).cloned())
         } else {
             Ok(None)
         }
