@@ -1,5 +1,6 @@
 mod app;
 mod debug_dump;
+mod headless;
 mod highlight;
 mod picker;
 mod theme;
@@ -17,6 +18,10 @@ use std::process;
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
+
+    /// Run headlessly and dump rendered frames to the given directory (for debugging).
+    #[arg(long, value_name = "DIR")]
+    dump_frames: Option<String>,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -32,8 +37,8 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
-    let path = match cli.command {
-        Some(Commands::Files { path }) => path,
+    let path = match &cli.command {
+        Some(Commands::Files { path }) => path.clone(),
         None => ".".to_string(),
     };
 
@@ -45,6 +50,14 @@ fn main() {
             process::exit(1);
         }
     };
+
+    // Headless frame-dump mode (no TTY required)
+    if let Some(ref dump_dir) = cli.dump_frames {
+        let out = std::path::Path::new(dump_dir);
+        headless::run_headless_dump(&backend, out, 30);
+        println!("Dumped frames to {}", out.display());
+        process::exit(0);
+    }
 
     // Setup terminal
     let mut terminal = match tui::setup_terminal() {

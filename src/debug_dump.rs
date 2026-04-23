@@ -31,11 +31,15 @@ pub fn buffer_to_string(buffer: &Buffer) -> String {
 /// Write a frame buffer to `$FFF_DUMP/frame-{count:04}.txt`.
 pub fn dump_buffer(buffer: &Buffer, count: usize) {
     if let Ok(dir) = std::env::var("FFF_DUMP") {
-        let path = Path::new(&dir);
-        if std::fs::create_dir_all(path).is_ok() {
-            let file = path.join(format!("frame-{count:04}.txt"));
-            let text = buffer_to_string(buffer);
-            let _ = std::fs::write(&file, text);
-        }
+        dump_buffer_to_dir(buffer, count, Path::new(&dir));
+    }
+}
+
+/// Write a frame buffer to `{dir}/frame-{count:04}.txt`.
+pub fn dump_buffer_to_dir(buffer: &Buffer, count: usize, dir: &Path) {
+    if std::fs::create_dir_all(dir).is_ok() {
+        let file = dir.join(format!("frame-{count:04}.txt"));
+        let text = buffer_to_string(buffer);
+        let _ = std::fs::write(&file, text);
     }
 }

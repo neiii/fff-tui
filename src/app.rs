@@ -207,7 +207,7 @@ impl App {
         }
     }
 
-    fn refresh_search(&mut self, backend: &PickerBackend) {
+    pub(crate) fn refresh_search(&mut self, backend: &PickerBackend) {
         let limit = 500; // fetch enough for smooth scrolling
         let output = backend.search(&self.query, limit);
         self.results = output.results;
