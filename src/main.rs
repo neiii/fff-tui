@@ -39,6 +39,10 @@ struct Cli {
     /// Output multiple selections space-separated on a single line.
     #[arg(long)]
     space_separated: bool,
+
+    /// Path shortening strategy for long directories.
+    #[arg(long, value_name = "STRATEGY", default_value = "middle_number")]
+    path_shorten: String,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -88,6 +92,7 @@ fn main() {
     // Run app
     let mut app = App::new();
     app.search_mode.group_grep = cli.group;
+    app.path_shorten_strategy = cli.path_shorten;
     let result = app.run(&mut terminal, &backend);
 
     // Restore terminal regardless of result

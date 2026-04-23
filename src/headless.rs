@@ -49,6 +49,7 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             search_mode: app.search_mode,
             search_scope: app.search_scope,
             group_grep: app.search_mode.group_grep,
+            path_shorten_strategy: app.path_shorten_strategy.clone(),
         };
         terminal
             .draw(|f| {
@@ -93,6 +94,7 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             search_mode: app.search_mode,
             search_scope: app.search_scope,
             group_grep: app.search_mode.group_grep,
+            path_shorten_strategy: app.path_shorten_strategy.clone(),
         };
         terminal
             .draw(|f| {
@@ -125,6 +127,7 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             search_mode: app.search_mode,
             search_scope: app.search_scope,
             group_grep: app.search_mode.group_grep,
+            path_shorten_strategy: app.path_shorten_strategy.clone(),
         };
         terminal
             .draw(|f| {

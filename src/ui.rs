@@ -28,6 +28,7 @@ pub struct UiState {
     pub search_mode: SearchMode,
     pub search_scope: SearchScope,
     pub group_grep: bool,
+    pub path_shorten_strategy: String,
 }
 
 pub fn draw(frame: &mut Frame, state: &UiState, theme: &Theme) {
@@ -198,7 +199,7 @@ fn draw_result_list(frame: &mut Frame, area: Rect, state: &UiState, theme: &Them
         };
 
         let is_marked = state.selected_keys.contains(&selection_key(result));
-        let line = build_result_line(result, &state.highlight_query, theme, inner.width as usize, is_selected, is_marked, state.group_grep);
+        let line = build_result_line(result, &state.highlight_query, theme, inner.width as usize, is_selected, is_marked, state.group_grep, &state.path_shorten_strategy);
         let para = Paragraph::new(line);
         frame.render_widget(para, row_area);
     }
@@ -212,6 +213,7 @@ fn build_result_line(
     is_selected: bool,
     is_marked: bool,
     group_grep: bool,
+    path_shorten_strategy: &str,
 ) -> Line<'static> {
     let base_style = if is_selected {
         theme.style_selected()
@@ -487,9 +489,9 @@ fn build_result_line(
                 dir_spans.push(Span::styled(dir_text, theme.style_dim()));
             } else if content_width > file_width + 4 {
                 let max_dir = content_width.saturating_sub(file_width + 2);
-                let (truncated, _) = truncate_to_width(&dir_path, max_dir);
-                if !truncated.is_empty() {
-                    dir_spans.push(Span::styled(format!(" {truncated}…"), theme.style_dim()));
+                let shortened = shorten_dir_path(dir_path, max_dir, path_shorten_strategy);
+                if !shortened.is_empty() {
+                    dir_spans.push(Span::styled(format!(" {shortened}"), theme.style_dim()));
                 }
             }
         }
@@ -558,9 +560,9 @@ fn build_result_line(
                 dir_spans.push(Span::styled(dir_text, theme.style_dim().add_modifier(Modifier::BOLD)));
             } else if content_width > file_width + 4 {
                 let max_dir = content_width.saturating_sub(file_width + 2);
-                let (truncated, _) = truncate_to_width(&dir_path, max_dir);
-                if !truncated.is_empty() {
-                    dir_spans.push(Span::styled(format!(" {truncated}…"), theme.style_dim().add_modifier(Modifier::BOLD)));
+                let shortened = shorten_dir_path(dir_path, max_dir, path_shorten_strategy);
+                if !shortened.is_empty() {
+                    dir_spans.push(Span::styled(format!(" {shortened}"), theme.style_dim().add_modifier(Modifier::BOLD)));
                 }
             }
         }
@@ -588,6 +590,64 @@ fn git_badge(status: Option<&str>, theme: &Theme) -> (char, Color) {
         Some("renamed") => ('R', theme.git_renamed_fg),
         Some("ignored") => ('I', theme.git_ignored_fg),
         _ => (' ', theme.fg),
+    }
+}
+
+fn shorten_dir_path(dir_path: &str, max_width: usize, strategy: &str) -> String {
+    if dir_path.is_empty() || dir_path.width() <= max_width {
+        return dir_path.to_string();
+    }
+
+    let components: Vec<&str> = dir_path.split('/').collect();
+    if components.len() <= 2 {
+        let (truncated, _) = truncate_to_width(dir_path, max_width.saturating_sub(1));
+        if !truncated.is_empty() {
+            return format!("{truncated}…");
+        }
+        return dir_path.to_string();
+    }
+
+    let first = components[0];
+    let last = components[components.len() - 1];
+
+    match strategy {
+        "middle" => {
+            let shortened = format!("{first}/.../{last}");
+            if shortened.width() <= max_width {
+                return shortened;
+            }
+            let alt = format!(".../{last}");
+            if alt.width() <= max_width {
+                return alt;
+            }
+        }
+        "middle_number" => {
+            let hidden = components.len().saturating_sub(2);
+            let middle = if hidden <= 3 { "..." } else { &format!(".{hidden}.") };
+            let shortened = format!("{first}/{middle}/{last}");
+            if shortened.width() <= max_width {
+                return shortened;
+            }
+            let alt = format!(".../{last}");
+            if alt.width() <= max_width {
+                return alt;
+            }
+        }
+        "end" => {
+            let (truncated, _) = truncate_to_width(dir_path, max_width.saturating_sub(1));
+            if !truncated.is_empty() {
+                return format!("{truncated}…");
+            }
+        }
+        _ => {}
+    }
+
+    // Fallback: just truncate
+    let (truncated, _) = truncate_to_width(dir_path, max_width.saturating_sub(1));
+    if !truncated.is_empty() {
+        format!("{truncated}…")
+    } else {
+        dir_path.to_string()
     }
 }
 
@@ -865,6 +925,7 @@ mod tests {
             search_mode: SearchMode::default(),
             search_scope: SearchScope::default(),
             group_grep: false,
+            path_shorten_strategy: "middle_number".into(),
         }
     }
 
@@ -1294,5 +1355,38 @@ mod tests {
             text.contains('M'),
             "expected git modified badge 'M' in:\n{text}"
         );
+    }
+
+    #[test]
+    fn test_shorten_dir_path_middle_number() {
+        // 5 components, 3 hidden -> "..." because hidden <= 3
+        assert_eq!(
+            shorten_dir_path("a/b/c/d/e", 8, "middle_number"),
+            "a/.../e"
+        );
+        // 6 components, 4 hidden -> ".4." because hidden > 3
+        assert_eq!(
+            shorten_dir_path("a/b/c/d/e/f", 8, "middle_number"),
+            "a/.4./f"
+        );
+        // Short path that already fits
+        assert_eq!(
+            shorten_dir_path("a/b", 10, "middle_number"),
+            "a/b"
+        );
+    }
+
+    #[test]
+    fn test_shorten_dir_path_middle() {
+        assert_eq!(
+            shorten_dir_path("a/b/c/d/e", 8, "middle"),
+            "a/.../e"
+        );
+    }
+
+    #[test]
+    fn test_shorten_dir_path_end() {
+        let result = shorten_dir_path("very/long/path/name", 10, "end");
+        assert!(result.ends_with('…'), "expected truncation with ellipsis: {result}");
     }
 }

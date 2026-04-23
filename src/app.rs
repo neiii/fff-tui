@@ -25,6 +25,7 @@ pub struct App {
     pub search_mode: SearchMode,
     pub search_scope: SearchScope,
     pub preview_enabled: bool,
+    pub path_shorten_strategy: String,
 }
 
 impl App {
@@ -48,6 +49,7 @@ impl App {
             search_mode: SearchMode::default(),
             search_scope: SearchScope::default(),
             preview_enabled: true,
+            path_shorten_strategy: "middle_number".into(),
         }
     }
 
@@ -92,6 +94,7 @@ impl App {
                 search_mode: self.search_mode,
                 search_scope: self.search_scope,
                 group_grep: self.search_mode.group_grep,
+                path_shorten_strategy: self.path_shorten_strategy.clone(),
             };
             terminal.draw(|f| {
                 draw(f, &ui_state, &Theme::default());
@@ -159,6 +162,7 @@ impl App {
                 search_mode: self.search_mode,
                 search_scope: self.search_scope,
                 group_grep: self.search_mode.group_grep,
+                path_shorten_strategy: self.path_shorten_strategy.clone(),
             };
             terminal.draw(|f| {
                 draw(f, &ui_state, &Theme::default());
