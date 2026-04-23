@@ -1,22 +1,48 @@
 use fff_search::{
-    file_picker::FilePicker, FilePickerOptions, FuzzySearchOptions, PaginationArgs, QueryParser,
-    SharedFrecency, SharedPicker, SharedQueryTracker,
+    file_picker::FilePicker, FilePickerOptions, FuzzySearchOptions, GrepMode, GrepSearchOptions,
+    PaginationArgs, QueryParser, SharedFrecency, SharedPicker, SharedQueryTracker,
 };
 use std::path::PathBuf;
 
-/// A lightweight, owned result from the file picker.
+/// The kind of search result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchKind {
+    File,
+    Line,
+}
+
+/// A unified search result — either a file path match or a content line match.
 #[derive(Clone)]
-pub struct FileResult {
+pub struct UnifiedResult {
+    pub kind: MatchKind,
     pub relative_path: String,
     pub absolute_path: String,
+    pub score: i32,
     pub exact_match: bool,
+    /// Line-only fields
+    pub line_number: Option<u64>,
+    pub line_content: Option<String>,
+    pub match_byte_offsets: Option<Vec<(u32, u32)>>,
+    pub is_definition: Option<bool>,
 }
 
 /// Output of a search operation.
 pub struct SearchOutput {
-    pub results: Vec<FileResult>,
+    pub results: Vec<UnifiedResult>,
     pub total_matched: usize,
     pub highlight_query: String,
+    pub searchable_files: usize,
+}
+
+impl SearchOutput {
+    fn empty(query: &str) -> Self {
+        Self {
+            results: Vec::new(),
+            total_matched: 0,
+            highlight_query: query.to_string(),
+            searchable_files: 0,
+        }
+    }
 }
 
 /// Wrapper around fff-core's FilePicker that provides a sync API for the TUI.
@@ -69,28 +95,16 @@ impl PickerBackend {
             .unwrap_or(0)
     }
 
-    /// Perform a fuzzy search and return owned results.
+    /// Perform a unified search (fuzzy file + content grep) and return owned results.
     pub fn search(&self, query: &str, limit: usize) -> SearchOutput {
         let guard = match self.shared_picker.read() {
             Ok(g) => g,
-            Err(_) => {
-                return SearchOutput {
-                    results: Vec::new(),
-                    total_matched: 0,
-                    highlight_query: query.to_string(),
-                }
-            }
+            Err(_) => return SearchOutput::empty(query),
         };
 
         let picker = match guard.as_ref() {
             Some(p) => p,
-            None => {
-                return SearchOutput {
-                    results: Vec::new(),
-                    total_matched: 0,
-                    highlight_query: query.to_string(),
-                }
-            }
+            None => return SearchOutput::empty(query),
         };
 
         let parser = QueryParser::default();
@@ -103,7 +117,8 @@ impl PickerBackend {
             fff_search::FuzzyQuery::Empty => String::new(),
         };
 
-        let results = picker.fuzzy_search(
+        // 1. Fuzzy file search (always run)
+        let fuzzy_results = picker.fuzzy_search(
             &parsed,
             None, // no query tracker for now
             FuzzySearchOptions {
@@ -116,23 +131,91 @@ impl PickerBackend {
             },
         );
 
-        let total_matched = results.total_matched;
-        let mut file_results = Vec::with_capacity(results.items.len());
+        let mut unified = Vec::with_capacity(limit);
+        let mut total_matched = fuzzy_results.total_matched;
 
-        for (item, score) in results.items.iter().zip(results.scores.iter()) {
+        for (item, score) in fuzzy_results.items.iter().zip(fuzzy_results.scores.iter()) {
             let relative_path = item.relative_path(picker);
             let absolute_path = item.absolute_path(picker, &self.base_path);
-            file_results.push(FileResult {
+            unified.push(UnifiedResult {
+                kind: MatchKind::File,
                 relative_path,
                 absolute_path: absolute_path.to_string_lossy().into_owned(),
+                score: score.total,
                 exact_match: score.exact_match,
+                line_number: None,
+                line_content: None,
+                match_byte_offsets: None,
+                is_definition: None,
             });
         }
 
+        // 2. Grep search for non-empty queries
+        let mut searchable_files = 0usize;
+        if !highlight_query.is_empty() {
+            let grep_options = GrepSearchOptions {
+                mode: GrepMode::PlainText,
+                smart_case: true,
+                time_budget_ms: 200,
+                page_limit: limit,
+                classify_definitions: true,
+                ..Default::default()
+            };
+
+            let grep_result = picker.grep(&parsed, &grep_options);
+            searchable_files = grep_result.filtered_file_count;
+            total_matched += grep_result.matches.len();
+
+            for m in &grep_result.matches {
+                if m.file_index >= grep_result.files.len() {
+                    continue;
+                }
+                let file = grep_result.files[m.file_index];
+                let relative_path = file.relative_path(picker);
+                let absolute_path = file.absolute_path(picker, &self.base_path);
+                unified.push(UnifiedResult {
+                    kind: MatchKind::Line,
+                    relative_path,
+                    absolute_path: absolute_path.to_string_lossy().into_owned(),
+                    score: 0,
+                    exact_match: false,
+                    line_number: Some(m.line_number),
+                    line_content: Some(m.line_content.clone()),
+                    match_byte_offsets: Some(
+                        m.match_byte_offsets.iter().map(|&(a, b)| (a, b)).collect(),
+                    ),
+                    is_definition: Some(m.is_definition),
+                });
+            }
+        }
+
+        // Sort: exact file matches first, then line matches, then other file matches by score
+        unified.sort_by(|a, b| {
+            let a_exact = a.kind == MatchKind::File && a.exact_match;
+            let b_exact = b.kind == MatchKind::File && b.exact_match;
+            match (a_exact, b_exact) {
+                (true, false) => return std::cmp::Ordering::Less,
+                (false, true) => return std::cmp::Ordering::Greater,
+                _ => {}
+            }
+            let a_line = a.kind == MatchKind::Line;
+            let b_line = b.kind == MatchKind::Line;
+            match (a_line, b_line) {
+                (true, false) => return std::cmp::Ordering::Less,
+                (false, true) => return std::cmp::Ordering::Greater,
+                _ => {}
+            }
+            // Both same kind: sort by score descending
+            b.score.cmp(&a.score)
+        });
+
+        unified.truncate(limit);
+
         SearchOutput {
-            results: file_results,
+            results: unified,
             total_matched,
             highlight_query,
+            searchable_files,
         }
     }
 
@@ -165,7 +248,10 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1000));
         let output = backend.search("main", 50);
         // Should find src/main.rs or similar
-        let has_main = output.results.iter().any(|r| r.relative_path.contains("main"));
+        let has_main = output.results.iter().any(|r| {
+            r.relative_path.contains("main")
+                || r.line_content.as_ref().is_some_and(|c| c.contains("main"))
+        });
         assert!(has_main || output.total_matched == 0);
     }
 }

@@ -1,4 +1,4 @@
-use crate::picker::{FileResult, PickerBackend};
+use crate::picker::{PickerBackend, UnifiedResult};
 use crate::theme::Theme;
 use crate::ui::{draw, UiState};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 pub struct App {
     pub query: String,
     pub highlight_query: String,
-    pub results: Vec<FileResult>,
+    pub results: Vec<UnifiedResult>,
     pub selected: usize,
     pub scroll_offset: usize,
     pub total_files: usize,

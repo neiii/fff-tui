@@ -1,5 +1,5 @@
 use crate::highlight::{find_match_indices, indices_to_ranges};
-use crate::picker::FileResult;
+use crate::picker::{MatchKind, UnifiedResult};
 use crate::theme::Theme;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -13,7 +13,7 @@ use unicode_width::UnicodeWidthStr;
 pub struct UiState {
     pub query: String,
     pub highlight_query: String,
-    pub results: Vec<FileResult>,
+    pub results: Vec<UnifiedResult>,
     pub selected: usize,
     pub scroll_offset: usize,
     pub total_files: usize,
@@ -109,11 +109,7 @@ fn draw_results(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
     }
 }
 
-fn build_result_line(result: &FileResult, query: &str, theme: &Theme, is_selected: bool) -> Line<'static> {
-    let path = &result.relative_path;
-    let indices = find_match_indices(query, path);
-    let ranges = indices_to_ranges(&indices, path);
-
+fn build_result_line(result: &UnifiedResult, query: &str, theme: &Theme, is_selected: bool) -> Line<'static> {
     let base_style = if is_selected {
         theme.style_selected()
     } else {
@@ -127,34 +123,88 @@ fn build_result_line(result: &FileResult, query: &str, theme: &Theme, is_selecte
     };
 
     let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut last_end = 0usize;
 
-    for (start, end) in ranges {
-        if start > last_end {
-            spans.push(Span::styled(
-                path[last_end..start].to_string(),
-                base_style,
-            ));
+    if result.kind == MatchKind::Line {
+        // Line result: show path:line_number and line content
+        let path = &result.relative_path;
+        let line_num = result.line_number.unwrap_or(0);
+        let content = result.line_content.as_deref().unwrap_or("");
+
+        // Highlight path
+        let path_indices = find_match_indices(query, path);
+        let path_ranges = indices_to_ranges(&path_indices, path);
+        let mut last_end = 0usize;
+        for (start, end) in path_ranges {
+            if start > last_end {
+                spans.push(Span::styled(path[last_end..start].to_string(), base_style));
+            }
+            spans.push(Span::styled(path[start..end].to_string(), match_style));
+            last_end = end;
         }
-        spans.push(Span::styled(
-            path[start..end].to_string(),
-            match_style,
-        ));
-        last_end = end;
-    }
+        if last_end < path.len() {
+            spans.push(Span::styled(path[last_end..].to_string(), base_style));
+        }
+        if spans.is_empty() && !path.is_empty() {
+            spans.push(Span::styled(path.clone(), base_style));
+        }
 
-    if last_end < path.len() {
-        spans.push(Span::styled(path[last_end..].to_string(), base_style));
-    }
+        // Line number
+        spans.push(Span::styled(format!(":{line_num}"), base_style.add_modifier(Modifier::DIM)));
 
-    // If no ranges but we have text, show it all
-    if spans.is_empty() && !path.is_empty() {
-        spans.push(Span::styled(path.clone(), base_style));
-    }
+        // Separator
+        spans.push(Span::styled("  ", base_style));
 
-    // Add a small indicator for exact matches
-    if result.exact_match {
-        spans.push(Span::styled("  ✦", match_style));
+        // Line content with match highlighting from byte offsets
+        if let Some(ref offsets) = result.match_byte_offsets {
+            let mut last_end = 0usize;
+            for &(start, end) in offsets {
+                let start = start as usize;
+                let end = end as usize;
+                if start > last_end && start <= content.len() {
+                    spans.push(Span::styled(content[last_end..start].to_string(), base_style));
+                }
+                if end <= content.len() {
+                    spans.push(Span::styled(content[start..end].to_string(), match_style));
+                    last_end = end;
+                }
+            }
+            if last_end < content.len() {
+                spans.push(Span::styled(content[last_end..].to_string(), base_style));
+            }
+        } else {
+            spans.push(Span::styled(content.to_string(), base_style));
+        }
+
+        // Definition indicator
+        if result.is_definition == Some(true) {
+            spans.push(Span::styled("  §", match_style));
+        }
+    } else {
+        // File result: show path with fuzzy highlights
+        let path = &result.relative_path;
+        let indices = find_match_indices(query, path);
+        let ranges = indices_to_ranges(&indices, path);
+
+        let mut last_end = 0usize;
+        for (start, end) in ranges {
+            if start > last_end {
+                spans.push(Span::styled(path[last_end..start].to_string(), base_style));
+            }
+            spans.push(Span::styled(path[start..end].to_string(), match_style));
+            last_end = end;
+        }
+
+        if last_end < path.len() {
+            spans.push(Span::styled(path[last_end..].to_string(), base_style));
+        }
+
+        if spans.is_empty() && !path.is_empty() {
+            spans.push(Span::styled(path.clone(), base_style));
+        }
+
+        if result.exact_match {
+            spans.push(Span::styled("  ✦", match_style));
+        }
     }
 
     Line::from(spans)
@@ -197,7 +247,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    fn make_state(is_scanning: bool, files: usize, matches: usize, results: Vec<FileResult>) -> UiState {
+    fn make_state(is_scanning: bool, files: usize, matches: usize, results: Vec<UnifiedResult>) -> UiState {
         UiState {
             query: String::new(),
             highlight_query: String::new(),
@@ -234,10 +284,16 @@ mod tests {
     fn test_ready_with_results() {
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).unwrap();
-        let results = vec![FileResult {
+        let results = vec![UnifiedResult {
+            kind: MatchKind::File,
             relative_path: "src/main.rs".into(),
             absolute_path: "/dev/null/src/main.rs".into(),
+            score: 0,
             exact_match: false,
+            line_number: None,
+            line_content: None,
+            match_byte_offsets: None,
+            is_definition: None,
         }];
         let state = make_state(false, 42, 1, results);
 
