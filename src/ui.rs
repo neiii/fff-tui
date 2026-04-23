@@ -4,8 +4,8 @@ use crate::picker::{MatchKind, SearchMode, SearchScope, UnifiedResult};
 use crate::theme::Theme;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
+    style::{Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, BorderType, Borders, Padding as RatatuiPadding, Paragraph},
     Frame,
 };
@@ -25,6 +25,7 @@ pub struct UiState {
     pub preview_enabled: bool,
     pub search_mode: SearchMode,
     pub search_scope: SearchScope,
+    pub group_grep: bool,
 }
 
 pub fn draw(frame: &mut Frame, state: &UiState, theme: &Theme) {
@@ -194,7 +195,7 @@ fn draw_result_list(frame: &mut Frame, area: Rect, state: &UiState, theme: &Them
             height: 1,
         };
 
-        let line = build_result_line(result, &state.highlight_query, theme, inner.width as usize, is_selected);
+        let line = build_result_line(result, &state.highlight_query, theme, inner.width as usize, is_selected, state.group_grep);
         let para = Paragraph::new(line);
         frame.render_widget(para, row_area);
     }
@@ -206,6 +207,7 @@ fn build_result_line(
     theme: &Theme,
     available_width: usize,
     is_selected: bool,
+    group_grep: bool,
 ) -> Line<'static> {
     let base_style = if is_selected {
         theme.style_selected()
@@ -238,7 +240,11 @@ fn build_result_line(
             .and_then(|n| n.to_str())
             .unwrap_or(&result.relative_path);
         let line_num = result.line_number.unwrap_or(0);
-        let meta = format!("{file_name}:{line_num}");
+        let meta = if group_grep {
+            format!("{line_num}")
+        } else {
+            format!("{file_name}:{line_num}")
+        };
         let meta_width = meta.width();
         let gap = 2;
 
@@ -361,7 +367,7 @@ fn build_result_line(
             }
             spans.push(Span::styled(meta, theme.style_dim()));
         }
-    } else {
+    } else if result.kind == MatchKind::File {
         // File result: icon + filename (highlighted) + dimmed directory
         let path = &result.relative_path;
         let icon_info = icons::lookup(path);
@@ -431,6 +437,73 @@ fn build_result_line(
 
         if result.exact_match {
             spans.push(Span::styled("✦", match_style));
+        }
+    } else {
+        // FileHeader result: bold icon + filename + dimmed directory (grouped grep header)
+        let path = &result.relative_path;
+        let icon_info = icons::lookup(path);
+        let icon_str = icon_info.map(|i| i.icon).unwrap_or(" ");
+        let icon_color = icon_info.map(|i| i.color).unwrap_or(theme.dim_fg);
+
+        spans.push(Span::styled(
+            format!("{icon_str} "),
+            Style::default().fg(icon_color).add_modifier(Modifier::BOLD),
+        ));
+
+        let path_obj = std::path::Path::new(path);
+        let filename = path_obj.file_name().and_then(|n| n.to_str()).unwrap_or(path);
+        let dir_path = path_obj
+            .parent()
+            .and_then(|p| p.to_str())
+            .filter(|d| !d.is_empty() && *d != ".")
+            .unwrap_or("");
+
+        let prefix_width = 2 + icon_str.width() + 1;
+        let content_width = available_width.saturating_sub(prefix_width);
+
+        let mut file_spans: Vec<Span<'static>> = Vec::new();
+        let filename_ranges = indices_to_ranges(&find_match_indices(query, filename), filename);
+        let mut last_end = 0usize;
+        let header_base = base_style.add_modifier(Modifier::BOLD);
+        let header_match = match_style.add_modifier(Modifier::BOLD);
+        for (start, end) in &filename_ranges {
+            if *start > last_end {
+                file_spans.push(Span::styled(filename[last_end..*start].to_string(), header_base));
+            }
+            file_spans.push(Span::styled(filename[*start..*end].to_string(), header_match));
+            last_end = *end;
+        }
+        if last_end < filename.len() {
+            file_spans.push(Span::styled(filename[last_end..].to_string(), header_base));
+        }
+        if file_spans.is_empty() && !filename.is_empty() {
+            file_spans.push(Span::styled(filename.to_string(), header_base));
+        }
+        let file_width: usize = file_spans.iter().map(|s| s.content.width()).sum();
+
+        let mut dir_spans: Vec<Span<'static>> = Vec::new();
+        if !dir_path.is_empty() {
+            let dir_text = format!(" {dir_path}");
+            let dir_width = dir_text.width();
+            if file_width + dir_width <= content_width {
+                dir_spans.push(Span::styled(dir_text, theme.style_dim().add_modifier(Modifier::BOLD)));
+            } else if content_width > file_width + 4 {
+                let max_dir = content_width.saturating_sub(file_width + 2);
+                let (truncated, _) = truncate_to_width(&dir_path, max_dir);
+                if !truncated.is_empty() {
+                    dir_spans.push(Span::styled(format!(" {truncated}…"), theme.style_dim().add_modifier(Modifier::BOLD)));
+                }
+            }
+        }
+        let dir_width: usize = dir_spans.iter().map(|s| s.content.width()).sum();
+
+        let total_used = prefix_width + file_width + dir_width;
+        let pad_width = available_width.saturating_sub(total_used);
+
+        spans.extend(file_spans);
+        spans.extend(dir_spans);
+        if pad_width > 0 {
+            spans.push(Span::styled(" ".repeat(pad_width), base_style));
         }
     }
 
@@ -651,6 +724,10 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme
         hints.push(Span::styled(scope_label, theme.style_dim()));
     }
 
+    if state.group_grep {
+        hints.push(Span::styled("  [grouped]", theme.style_dim()));
+    }
+
     frame.render_widget(
         Paragraph::new(Line::from(hints)).alignment(Alignment::Center),
         chunks[1],
@@ -694,6 +771,7 @@ mod tests {
             preview_enabled: true,
             search_mode: SearchMode::default(),
             search_scope: SearchScope::default(),
+            group_grep: false,
         }
     }
 
@@ -883,6 +961,102 @@ mod tests {
         assert!(
             text.contains("Results"),
             "expected Results title in:\n{text}"
+        );
+    }
+
+    #[test]
+    fn test_file_header_rendered() {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let results = vec![UnifiedResult {
+            kind: MatchKind::FileHeader,
+            relative_path: "src/app.rs".into(),
+            absolute_path: "/dev/null/src/app.rs".into(),
+            score: 0,
+            exact_match: false,
+            line_number: None,
+            line_content: None,
+            match_byte_offsets: None,
+            is_definition: None,
+        }];
+        let state = make_state(false, 10, 1, results);
+
+        terminal.draw(|f| draw(f, &state, &Theme::default())).unwrap();
+
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(
+            text.contains("app.rs"),
+            "expected file header filename in:\n{text}"
+        );
+    }
+
+    #[test]
+    fn test_grouped_grep_renders_short_meta() {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let results = vec![
+            UnifiedResult {
+                kind: MatchKind::FileHeader,
+                relative_path: "src/app.rs".into(),
+                absolute_path: "/dev/null/src/app.rs".into(),
+                score: 0,
+                exact_match: false,
+                line_number: None,
+                line_content: None,
+                match_byte_offsets: None,
+                is_definition: None,
+            },
+            UnifiedResult {
+                kind: MatchKind::Line,
+                relative_path: "src/app.rs".into(),
+                absolute_path: "/dev/null/src/app.rs".into(),
+                score: 0,
+                exact_match: false,
+                line_number: Some(42),
+                line_content: Some("pub struct App {}".into()),
+                match_byte_offsets: Some(vec![(4, 7)]),
+                is_definition: Some(true),
+            },
+        ];
+        let mut state = make_state(false, 10, 2, results);
+        state.group_grep = true;
+
+        terminal.draw(|f| draw(f, &state, &Theme::default())).unwrap();
+
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(
+            text.contains("app.rs"),
+            "expected file header in:\n{text}"
+        );
+        assert!(
+            text.contains("42"),
+            "expected line number in:\n{text}"
+        );
+        assert!(
+            text.contains("pub struct"),
+            "expected line content in:\n{text}"
+        );
+        // In grouped mode, meta should be just the line number, not "filename:line"
+        assert!(
+            !text.contains("app.rs:42"),
+            "expected no combined meta in grouped mode:\n{text}"
+        );
+    }
+
+    #[test]
+    fn test_grouped_indicator_in_status_bar() {
+        let backend = TestBackend::new(120, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let results = vec![];
+        let mut state = make_state(false, 10, 0, results);
+        state.group_grep = true;
+
+        terminal.draw(|f| draw(f, &state, &Theme::default())).unwrap();
+
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(
+            text.contains("[grouped]"),
+            "expected [grouped] indicator in status bar:\n{text}"
         );
     }
 }

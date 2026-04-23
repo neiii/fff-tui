@@ -46,6 +46,7 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             preview_enabled: app.preview_enabled,
             search_mode: app.search_mode,
             search_scope: app.search_scope,
+            group_grep: app.search_mode.group_grep,
         };
         terminal
             .draw(|f| {
@@ -88,6 +89,7 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             preview_enabled: app.preview_enabled,
             search_mode: app.search_mode,
             search_scope: app.search_scope,
+            group_grep: app.search_mode.group_grep,
         };
         terminal
             .draw(|f| {
@@ -118,6 +120,7 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             preview_enabled: app.preview_enabled,
             search_mode: app.search_mode,
             search_scope: app.search_scope,
+            group_grep: app.search_mode.group_grep,
         };
         terminal
             .draw(|f| {

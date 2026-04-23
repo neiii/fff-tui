@@ -102,6 +102,7 @@ fn main() {
 
 fn format_result(result: &UnifiedResult, line: bool, column: bool) -> String {
     let path = &result.absolute_path;
+    // FileHeader behaves like File for output formatting
     match (column, line, result.line_number) {
         (true, _, Some(ln)) => {
             // Column is always 1 for now (beginning of line)

@@ -11,6 +11,7 @@ pub struct SearchMode {
     pub whole_word: bool,
     pub regex: bool,
     pub fixed_strings: bool,
+    pub group_grep: bool,
 }
 
 /// Which result types to include in a search.
@@ -27,6 +28,7 @@ pub enum SearchScope {
 pub enum MatchKind {
     File,
     Line,
+    FileHeader,
 }
 
 /// A unified search result — either a file path match or a content line match.
@@ -136,44 +138,56 @@ impl PickerBackend {
         };
 
         // 1. Fuzzy file search
-        let mut unified = Vec::with_capacity(limit);
+        let mut exact_files = Vec::new();
+        let mut other_files = Vec::new();
         let mut total_matched = 0usize;
 
         if scope != SearchScope::GrepOnly {
             let fuzzy_results = picker.fuzzy_search(
-            &parsed,
-            None, // no query tracker for now
-            FuzzySearchOptions {
-                max_threads: 0, // auto
-                current_file: None,
-                project_path: Some(&self.base_path),
-                combo_boost_score_multiplier: 0,
-                min_combo_count: 0,
-                pagination: PaginationArgs { offset: 0, limit },
-            },
-        );
+                &parsed,
+                None, // no query tracker for now
+                FuzzySearchOptions {
+                    max_threads: 0, // auto
+                    current_file: None,
+                    project_path: Some(&self.base_path),
+                    combo_boost_score_multiplier: 0,
+                    min_combo_count: 0,
+                    pagination: PaginationArgs { offset: 0, limit },
+                },
+            );
 
             total_matched = fuzzy_results.total_matched;
 
             for (item, score) in fuzzy_results.items.iter().zip(fuzzy_results.scores.iter()) {
-            let relative_path = item.relative_path(picker);
-            let absolute_path = item.absolute_path(picker, &self.base_path);
-            unified.push(UnifiedResult {
-                kind: MatchKind::File,
-                relative_path,
-                absolute_path: absolute_path.to_string_lossy().into_owned(),
-                score: score.total,
-                exact_match: score.exact_match,
-                line_number: None,
-                line_content: None,
-                match_byte_offsets: None,
-                is_definition: None,
-            });
+                let relative_path = item.relative_path(picker);
+                let absolute_path = item.absolute_path(picker, &self.base_path);
+                let result = UnifiedResult {
+                    kind: MatchKind::File,
+                    relative_path,
+                    absolute_path: absolute_path.to_string_lossy().into_owned(),
+                    score: score.total,
+                    exact_match: score.exact_match,
+                    line_number: None,
+                    line_content: None,
+                    match_byte_offsets: None,
+                    is_definition: None,
+                };
+                if score.exact_match {
+                    exact_files.push(result);
+                } else {
+                    other_files.push(result);
+                }
             }
         }
 
+        // Sort file results by score descending
+        exact_files.sort_by(|a, b| b.score.cmp(&a.score));
+        other_files.sort_by(|a, b| b.score.cmp(&a.score));
+
         // 2. Grep search for non-empty queries
+        let mut line_results = Vec::new();
         let mut searchable_files = 0usize;
+
         if scope != SearchScope::FileOnly && !highlight_query.is_empty() {
             let grep_mode = if mode.regex {
                 GrepMode::Regex
@@ -201,7 +215,7 @@ impl PickerBackend {
                 let file = grep_result.files[m.file_index];
                 let relative_path = file.relative_path(picker);
                 let absolute_path = file.absolute_path(picker, &self.base_path);
-                unified.push(UnifiedResult {
+                line_results.push(UnifiedResult {
                     kind: MatchKind::Line,
                     relative_path,
                     absolute_path: absolute_path.to_string_lossy().into_owned(),
@@ -217,26 +231,36 @@ impl PickerBackend {
             }
         }
 
-        // Sort: exact file matches first, then by kind, then by score
-        unified.sort_by(|a, b| {
-            let a_exact = a.kind == MatchKind::File && a.exact_match;
-            let b_exact = b.kind == MatchKind::File && b.exact_match;
-            match (a_exact, b_exact) {
-                (true, false) => return std::cmp::Ordering::Less,
-                (false, true) => return std::cmp::Ordering::Greater,
-                _ => {}
-            }
-            let a_line = a.kind == MatchKind::Line;
-            let b_line = b.kind == MatchKind::Line;
-            match (a_line, b_line) {
-                (true, false) => return std::cmp::Ordering::Less,
-                (false, true) => return std::cmp::Ordering::Greater,
-                _ => {}
-            }
-            // Both same kind: sort by score descending
-            b.score.cmp(&a.score)
-        });
+        // 3. Assemble final results
+        let mut unified = Vec::with_capacity(limit);
+        unified.extend(exact_files);
 
+        if mode.group_grep && !line_results.is_empty() {
+            let mut grouped = Vec::new();
+            let mut last_path: Option<String> = None;
+            for r in line_results {
+                if last_path.as_ref() != Some(&r.relative_path) {
+                    grouped.push(UnifiedResult {
+                        kind: MatchKind::FileHeader,
+                        relative_path: r.relative_path.clone(),
+                        absolute_path: r.absolute_path.clone(),
+                        score: 0,
+                        exact_match: false,
+                        line_number: None,
+                        line_content: None,
+                        match_byte_offsets: None,
+                        is_definition: None,
+                    });
+                    last_path = Some(r.relative_path.clone());
+                }
+                grouped.push(r);
+            }
+            unified.extend(grouped);
+        } else {
+            unified.extend(line_results);
+        }
+
+        unified.extend(other_files);
         unified.truncate(limit);
 
         SearchOutput {

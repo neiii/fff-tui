@@ -87,6 +87,7 @@ impl App {
                 preview_enabled: self.preview_enabled,
                 search_mode: self.search_mode,
                 search_scope: self.search_scope,
+                group_grep: self.search_mode.group_grep,
             };
             terminal.draw(|f| {
                 draw(f, &ui_state, &Theme::default());
@@ -154,6 +155,7 @@ impl App {
                 preview_enabled: self.preview_enabled,
                 search_mode: self.search_mode,
                 search_scope: self.search_scope,
+                group_grep: self.search_mode.group_grep,
             };
             terminal.draw(|f| {
                 draw(f, &ui_state, &Theme::default());
@@ -202,6 +204,10 @@ impl App {
                                 SearchScope::Unified => SearchScope::GrepOnly,
                                 SearchScope::GrepOnly => SearchScope::FileOnly,
                             };
+                            self.refresh_search(backend);
+                        }
+                        'g' => {
+                            self.search_mode.group_grep = !self.search_mode.group_grep;
                             self.refresh_search(backend);
                         }
                         _ => {}
