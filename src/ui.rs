@@ -30,7 +30,7 @@ pub fn draw(frame: &mut Frame, state: &UiState, theme: &Theme) {
     let area = frame.area();
 
     let show_preview = state.preview_enabled
-        && state.terminal_width >= 100
+        && state.terminal_width >= 70
         && state.results.get(state.selected).is_some();
 
     let main_chunks = Layout::default()
@@ -219,7 +219,7 @@ fn build_result_line(
     let content_width = available_width.saturating_sub(prefix_width);
 
     if result.kind == MatchKind::Line {
-        let content = result.line_content.as_deref().unwrap_or("");
+        let (content, offset_shift) = strip_leading_whitespace(result.line_content.as_deref().unwrap_or(""));
         let file_name = std::path::Path::new(&result.relative_path)
             .file_name()
             .and_then(|n| n.to_str())
@@ -229,9 +229,25 @@ fn build_result_line(
         let meta_width = meta.width();
         let gap = 2;
 
+        // Adjust byte offsets for stripped leading whitespace
+        let adjusted_offsets: Option<Vec<(u32, u32)>> = result.match_byte_offsets.as_ref().map(|offsets| {
+            offsets
+                .iter()
+                .filter_map(|&(start, end)| {
+                    let s = start.saturating_sub(offset_shift as u32);
+                    let e = end.saturating_sub(offset_shift as u32);
+                    if e > 0 && s < content.len() as u32 {
+                        Some((s, e.min(content.len() as u32)))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        });
+
         // Build highlighted content spans
         let mut content_spans: Vec<Span<'static>> = Vec::new();
-        if let Some(ref offsets) = result.match_byte_offsets {
+        if let Some(ref offsets) = adjusted_offsets {
             let mut last_end = 0usize;
             for &(start, end) in offsets {
                 let start = start as usize;
@@ -278,7 +294,7 @@ fn build_result_line(
             let mut truncated_spans = Vec::new();
             if !truncated.is_empty() {
                 let trunc_byte_len = truncated.len();
-                if let Some(ref offsets) = result.match_byte_offsets {
+                if let Some(ref offsets) = adjusted_offsets {
                     let mut last_end = 0usize;
                     for &(start, end) in offsets {
                         let start = start as usize;
@@ -376,6 +392,13 @@ fn truncate_to_width(s: &str, max_width: usize) -> (&str, usize) {
         byte_end = i + ch.len_utf8();
     }
     (&s[..byte_end], width)
+}
+
+/// Strip leading whitespace from a string and return the number of bytes stripped.
+fn strip_leading_whitespace(s: &str) -> (&str, usize) {
+    let trimmed = s.trim_start();
+    let shift = s.len() - trimmed.len();
+    (trimmed, shift)
 }
 
 fn draw_preview_pane(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
