@@ -2,6 +2,7 @@ mod app;
 mod debug_dump;
 mod headless;
 mod highlight;
+mod icons;
 mod picker;
 mod theme;
 mod tui;

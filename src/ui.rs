@@ -1,4 +1,5 @@
 use crate::highlight::{find_match_indices, highlight_content, indices_to_ranges};
+use crate::icons;
 use crate::picker::{MatchKind, SearchMode, SearchScope, UnifiedResult};
 use crate::theme::Theme;
 use ratatui::{
@@ -361,31 +362,75 @@ fn build_result_line(
             spans.push(Span::styled(meta, theme.style_dim()));
         }
     } else {
-        // File result: show path with fuzzy highlights
+        // File result: icon + filename (highlighted) + dimmed directory
         let path = &result.relative_path;
-        let indices = find_match_indices(query, path);
-        let ranges = indices_to_ranges(&indices, path);
+        let icon_info = icons::lookup(path);
+        let icon_str = icon_info.map(|i| i.icon).unwrap_or(" ");
+        let icon_color = icon_info.map(|i| i.color).unwrap_or(theme.dim_fg);
 
+        spans.push(Span::styled(
+            format!("{icon_str} "),
+            Style::default().fg(icon_color),
+        ));
+
+        let path_obj = std::path::Path::new(path);
+        let filename = path_obj.file_name().and_then(|n| n.to_str()).unwrap_or(path);
+        let dir_path = path_obj
+            .parent()
+            .and_then(|p| p.to_str())
+            .filter(|d| !d.is_empty() && *d != ".")
+            .unwrap_or("");
+
+        let prefix_width = 2 + icon_str.width() + 1; // pointer + icon + space
+        let content_width = available_width.saturating_sub(prefix_width);
+
+        // Build filename spans with fuzzy highlights
+        let mut file_spans: Vec<Span<'static>> = Vec::new();
+        let filename_ranges = indices_to_ranges(&find_match_indices(query, filename), filename);
         let mut last_end = 0usize;
-        for (start, end) in ranges {
-            if start > last_end {
-                spans.push(Span::styled(path[last_end..start].to_string(), base_style));
+        for (start, end) in &filename_ranges {
+            if *start > last_end {
+                file_spans.push(Span::styled(filename[last_end..*start].to_string(), base_style));
             }
-            spans.push(Span::styled(path[start..end].to_string(), match_style));
-            last_end = end;
+            file_spans.push(Span::styled(filename[*start..*end].to_string(), match_style));
+            last_end = *end;
         }
-
-        if last_end < path.len() {
-            spans.push(Span::styled(path[last_end..].to_string(), base_style));
+        if last_end < filename.len() {
+            file_spans.push(Span::styled(filename[last_end..].to_string(), base_style));
         }
+        if file_spans.is_empty() && !filename.is_empty() {
+            file_spans.push(Span::styled(filename.to_string(), base_style));
+        }
+        let file_width: usize = file_spans.iter().map(|s| s.content.width()).sum();
 
-        if spans.len() == 1 && !path.is_empty() {
-            // Only pointer was added; add the full path
-            spans.push(Span::styled(path.clone(), base_style));
+        // Build dimmed directory spans
+        let mut dir_spans: Vec<Span<'static>> = Vec::new();
+        if !dir_path.is_empty() {
+            let dir_text = format!(" {dir_path}");
+            let dir_width = dir_text.width();
+            if file_width + dir_width <= content_width {
+                dir_spans.push(Span::styled(dir_text, theme.style_dim()));
+            } else if content_width > file_width + 4 {
+                let max_dir = content_width.saturating_sub(file_width + 2);
+                let (truncated, _) = truncate_to_width(&dir_path, max_dir);
+                if !truncated.is_empty() {
+                    dir_spans.push(Span::styled(format!(" {truncated}…"), theme.style_dim()));
+                }
+            }
+        }
+        let dir_width: usize = dir_spans.iter().map(|s| s.content.width()).sum();
+
+        let total_used = prefix_width + file_width + dir_width;
+        let pad_width = available_width.saturating_sub(total_used);
+
+        spans.extend(file_spans);
+        spans.extend(dir_spans);
+        if pad_width > 0 {
+            spans.push(Span::styled(" ".repeat(pad_width), base_style));
         }
 
         if result.exact_match {
-            spans.push(Span::styled("  ✦", match_style));
+            spans.push(Span::styled("✦", match_style));
         }
     }
 
@@ -696,8 +741,39 @@ mod tests {
             "expected results title in:\n{text}"
         );
         assert!(
-            text.contains("src/main.rs"),
+            text.contains("main.rs"),
             "expected result row in:\n{text}"
+        );
+    }
+
+    #[test]
+    fn test_file_icon_rendered() {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let results = vec![UnifiedResult {
+            kind: MatchKind::File,
+            relative_path: "src/main.rs".into(),
+            absolute_path: "/dev/null/src/main.rs".into(),
+            score: 0,
+            exact_match: false,
+            line_number: None,
+            line_content: None,
+            match_byte_offsets: None,
+            is_definition: None,
+        }];
+        let state = make_state(false, 42, 1, results);
+
+        terminal.draw(|f| draw(f, &state, &Theme::default())).unwrap();
+
+        let text = buffer_to_string(terminal.backend().buffer());
+        // Rust icon from nvim-web-devicons
+        assert!(
+            text.contains(''),
+            "expected nerd-font icon for .rs file in:\n{text}"
+        );
+        assert!(
+            text.contains("main.rs"),
+            "expected filename in:\n{text}"
         );
     }
 

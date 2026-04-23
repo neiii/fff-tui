@@ -734,3 +734,34 @@ pub fn get_icon(filename: &str, extension: Option<&str>) -> Option<FileIcon> {
     }
     None
 }
+
+/// Lookup icon for a file path.
+/// Tries exact filename first, then compound extension (e.g. "blade.php"),
+/// then simple extension.
+pub fn lookup(path: &str) -> Option<FileIcon> {
+    let filename = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())?;
+
+    // 1. Exact filename
+    if let Some(icon) = FILENAME_ICONS.get(filename) {
+        return Some(*icon);
+    }
+
+    // 2. Compound extension: "foo.blade.php" -> try "blade.php", then "php"
+    if let Some(dot_pos) = filename.find('.') {
+        let rest = &filename[dot_pos + 1..];
+        if let Some(icon) = EXTENSION_ICONS.get(rest) {
+            return Some(*icon);
+        }
+        // Also try splitting further: "foo.tar.gz" -> "tar.gz", then "gz"
+        if let Some(second_dot) = rest.find('.') {
+            let compound = &rest[second_dot + 1..];
+            if let Some(icon) = EXTENSION_ICONS.get(compound) {
+                return Some(*icon);
+            }
+        }
+    }
+
+    None
+}
