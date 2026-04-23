@@ -3,4 +3,17 @@ name = "fff-cli"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "fff"
+path = "src/main.rs"
+
 [dependencies]
+fff-search = { path = "../fff.nvim/crates/fff-core" }
+ratatui = "0.30"
+crossterm = { version = "0.28", features = ["event-stream"] }
+anyhow = "1.0"
+tokio = { version = "1.48", features = ["full"] }
+tracing = "0.1"
+parking_lot = "0.12"
+clap = { version = "4.5", features = ["derive"] }
+unicode-width = "0.2"
