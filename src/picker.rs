@@ -64,13 +64,8 @@ pub struct SearchOutput {
     pub results: Vec<UnifiedResult>,
     pub total_matched: usize,
     pub highlight_query: String,
-    pub searchable_files: usize,
     pub fuzzy_total_matched: usize,
-    pub grep_page_matched: usize,
     pub grep_next_file_offset: usize,
-    pub exact_files: Vec<UnifiedResult>,
-    pub line_results: Vec<UnifiedResult>,
-    pub other_files: Vec<UnifiedResult>,
 }
 
 impl SearchOutput {
@@ -79,13 +74,8 @@ impl SearchOutput {
             results: Vec::new(),
             total_matched: 0,
             highlight_query: query.to_string(),
-            searchable_files: 0,
             fuzzy_total_matched: 0,
-            grep_page_matched: 0,
             grep_next_file_offset: 0,
-            exact_files: Vec::new(),
-            line_results: Vec::new(),
-            other_files: Vec::new(),
         }
     }
 }
@@ -292,7 +282,7 @@ impl PickerBackend {
 
         // 2. Grep search for non-empty queries
         let mut line_results = Vec::new();
-        let mut searchable_files = 0usize;
+        let mut _searchable_files = 0usize;
         let mut grep_result_opt = None;
 
         if scope != SearchScope::FileOnly && !highlight_query.is_empty() {
@@ -315,7 +305,7 @@ impl PickerBackend {
             };
 
             let grep_result = picker.grep(&parsed, &grep_options);
-            searchable_files = grep_result.filtered_file_count;
+            _searchable_files = grep_result.filtered_file_count;
             total_matched += grep_result.matches.len();
 
             for m in &grep_result.matches {
@@ -379,13 +369,8 @@ impl PickerBackend {
             results: unified,
             total_matched,
             highlight_query,
-            searchable_files,
             fuzzy_total_matched: total_matched.saturating_sub(grep_result_opt.as_ref().map(|g| g.matches.len()).unwrap_or(0)),
-            grep_page_matched: grep_result_opt.as_ref().map(|g| g.matches.len()).unwrap_or(0),
             grep_next_file_offset: grep_result_opt.as_ref().map(|g| g.next_file_offset).unwrap_or(0),
-            exact_files,
-            line_results,
-            other_files,
         }
     }
 
