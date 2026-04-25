@@ -1,4 +1,4 @@
-use crate::picker::{selection_key, MatchKind, PickerBackend, SearchMode, SearchScope, UnifiedResult};
+use crate::picker::{selection_key, PickerBackend, SearchMode, SearchScope, UnifiedResult};
 use crate::theme::Theme;
 use crate::ui::{draw, UiState};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -28,25 +28,8 @@ pub struct App {
     pub current_file: Option<String>,
     pub force_combo_boost: bool,
     pub query_history_offset: usize,
-    // ── Infinite-scroll pagination state ──
-    /// Raw result categories.  Kept separate so we can append new pages
-    /// while preserving the unified stacking order.
-    pub exact_files: Vec<UnifiedResult>,
-    pub line_results: Vec<UnifiedResult>,
-    pub other_files: Vec<UnifiedResult>,
-    /// True total fuzzy matches (reported by backend for offset 0).
-    pub fuzzy_total_matched: usize,
-    /// Cumulative grep matches loaded across all pages.
-    pub cumulative_grep_matched: usize,
-    /// Next file offset for grep (0 = no more).
-    pub grep_next_file_offset: usize,
-    /// Backend batch size.
-    pub page_size: usize,
-    // ── Unified pagination (page replacement) ──
-    /// Current page index when in Unified scope (0 = first page).
-    pub unified_page_index: usize,
-    /// Start offsets for each visited page: (fuzzy_offset, grep_file_offset).
-    pub unified_page_offsets: Vec<(usize, usize)>,
+    /// Receiver for background exhaustive search results.
+    pub background_rx: Option<std::sync::mpsc::Receiver<(String, crate::picker::SearchOutput)>>,
 }
 
 impl App {
@@ -74,15 +57,7 @@ impl App {
             current_file: None,
             force_combo_boost: false,
             query_history_offset: 0,
-            exact_files: Vec::new(),
-            line_results: Vec::new(),
-            other_files: Vec::new(),
-            fuzzy_total_matched: 0,
-            cumulative_grep_matched: 0,
-            grep_next_file_offset: 0,
-            page_size: 500,
-            unified_page_index: 0,
-            unified_page_offsets: vec![(0, 0)],
+            background_rx: None,
         }
     }
 
@@ -98,6 +73,22 @@ impl App {
         self.refresh_search(backend);
 
         while !self.should_quit && !self.should_select {
+            // Apply background exhaustive search results when ready.
+            if let Some(ref rx) = self.background_rx {
+                if let Ok((query, output)) = rx.try_recv() {
+                    if self.query == query {
+                        self.results = output.results;
+                        self.total_matched = output.fuzzy_total_matched + output.grep_page_matched;
+                        self.highlight_query = output.highlight_query;
+                        if !self.results.is_empty() && self.selected >= self.results.len() {
+                            self.selected = self.results.len() - 1;
+                        }
+                        self.ensure_visible();
+                    }
+                    self.background_rx = None;
+                }
+            }
+
             if self.last_spinner_tick.elapsed() > Duration::from_millis(80) {
                 self.spinner_frame += 1;
                 self.last_spinner_tick = Instant::now();
@@ -175,8 +166,8 @@ impl App {
                 {
                     match c {
                         'c' => self.should_quit = true,
-                        'n' => self.move_selection(1, backend),
-                        'p' => self.move_selection(-1, backend),
+                        'n' => self.move_selection(1),
+                        'p' => self.move_selection(-1),
                         'a' => self.select_all_visible(),
                         'd' => self.deselect_all(),
                         'o' => self.preview_enabled = !self.preview_enabled,
@@ -247,14 +238,14 @@ impl App {
                 if key.modifiers.contains(KeyModifiers::ALT) {
                     self.cycle_query_history(-1, backend);
                 } else {
-                    self.move_selection(-1, backend);
+                    self.move_selection(-1);
                 }
             }
             KeyCode::Down => {
                 if key.modifiers.contains(KeyModifiers::ALT) {
                     self.cycle_query_history(1, backend);
                 } else {
-                    self.move_selection(1, backend);
+                    self.move_selection(1);
                 }
             }
             KeyCode::BackTab => {
@@ -270,25 +261,20 @@ impl App {
             KeyCode::End if !self.results.is_empty() => {
                 self.selected = self.results.len() - 1;
                 self.ensure_visible();
-                self.maybe_load_more(backend);
             }
             _ => {}
         }
     }
 
-    // ── Search & Pagination ──────────────────────────────────────────
+    // ── Search ───────────────────────────────────────────────────────
 
     pub(crate) fn refresh_search(&mut self, backend: &PickerBackend) {
-        self.exact_files.clear();
-        self.line_results.clear();
-        self.other_files.clear();
-        self.fuzzy_total_matched = 0;
-        self.cumulative_grep_matched = 0;
-        self.grep_next_file_offset = 0;
-        self.unified_page_index = 0;
-        self.unified_page_offsets = vec![(0, 0)];
         self.selected = 0;
         self.scroll_offset = 0;
+
+        // 1. Quick initial search — limited results so the UI feels instant.
+        const INITIAL_LIMIT: usize = 200;
+        const INITIAL_TIME_BUDGET_MS: u64 = 150;
 
         let output = backend.search(
             &self.query,
@@ -296,179 +282,42 @@ impl App {
             self.search_scope,
             self.current_file.as_deref(),
             self.force_combo_boost,
-            0,
-            0,
-            self.page_size,
+            INITIAL_LIMIT,
+            INITIAL_TIME_BUDGET_MS,
         );
 
-        self.exact_files = output.exact_files;
-        self.line_results = output.line_results;
-        self.other_files = output.other_files;
-        self.fuzzy_total_matched = output.fuzzy_total_matched;
-        self.cumulative_grep_matched = output.grep_page_matched;
-        self.grep_next_file_offset = output.grep_next_file_offset;
+        self.results = output.results;
+        self.total_matched = output.fuzzy_total_matched + output.grep_page_matched;
         self.highlight_query = output.highlight_query;
-
-        self.rebuild_results();
         self.total_files = backend.total_files();
         self.last_search_refresh = Instant::now();
 
-        // If the screen isn't filled, try to load more immediately.
-        // Skip for Unified mode so the user sees page 0 before we replace it.
-        let visible = self.results_visible_count();
-        if self.search_scope != SearchScope::Unified && self.results.len() < visible.saturating_mul(2) {
-            self.maybe_load_more(backend);
-        }
-    }
+        // 2. Spawn background thread for the full exhaustive search.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let backend_clone = backend.clone();
+        let query = self.query.clone();
+        let mode = self.search_mode;
+        let scope = self.search_scope;
+        let current_file = self.current_file.clone();
+        let force_combo = self.force_combo_boost;
 
-    fn rebuild_results(&mut self) {
-        let mut unified = Vec::with_capacity(
-            self.exact_files.len() + self.line_results.len() + self.other_files.len(),
-        );
-        unified.extend(self.exact_files.clone());
-
-        if self.search_mode.group_grep && !self.line_results.is_empty() {
-            let mut grouped = Vec::new();
-            let mut last_path: Option<String> = None;
-            for r in &self.line_results {
-                if last_path.as_ref() != Some(&r.relative_path) {
-                    grouped.push(UnifiedResult {
-                        kind: MatchKind::FileHeader,
-                        relative_path: r.relative_path.clone(),
-                        absolute_path: r.absolute_path.clone(),
-                        score: 0,
-                        exact_match: false,
-                        git_status: r.git_status.clone(),
-                        ..Default::default()
-                    });
-                    last_path = Some(r.relative_path.clone());
-                }
-                grouped.push(r.clone());
-            }
-            unified.extend(grouped);
-        } else {
-            unified.extend(self.line_results.clone());
-        }
-
-        unified.extend(self.other_files.clone());
-        self.results = unified;
-        self.total_matched = self.fuzzy_total_matched + self.cumulative_grep_matched;
-    }
-
-    fn maybe_load_more(&mut self, backend: &PickerBackend) {
-        const THRESHOLD: usize = 10;
-
-        if self.results.is_empty() {
-            return;
-        }
-
-        let remaining = self.results.len().saturating_sub(self.selected + 1);
-        let threshold = if self.search_scope == SearchScope::Unified {
-            0
-        } else {
-            THRESHOLD
-        };
-        if remaining > threshold {
-            return;
-        }
-
-        let fuzzy_offset = self.exact_files.len() + self.other_files.len();
-        let need_fuzzy = self.search_scope != SearchScope::GrepOnly
-            && fuzzy_offset < self.fuzzy_total_matched;
-        let need_grep = self.search_scope != SearchScope::FileOnly
-            && self.grep_next_file_offset > 0;
-
-        if !need_fuzzy && !need_grep {
-            return;
-        }
-
-        if self.search_scope == SearchScope::Unified {
-            let next_fuzzy_offset = fuzzy_offset;
-            let next_grep_file_offset = self.grep_next_file_offset;
-
-            let output = backend.search(
-                &self.query,
-                self.search_mode,
-                self.search_scope,
-                self.current_file.as_deref(),
-                self.force_combo_boost,
-                next_fuzzy_offset,
-                next_grep_file_offset,
-                self.page_size,
+        std::thread::spawn(move || {
+            let full = backend_clone.search(
+                &query, mode, scope, current_file.as_deref(), force_combo,
+                usize::MAX, 0,
             );
+            let _ = tx.send((query, full));
+        });
 
-            if output.results.is_empty() {
-                return;
-            }
-
-            // Page replacement: discard current page and show the next one.
-            self.exact_files = output.exact_files;
-            self.line_results = output.line_results;
-            self.other_files = output.other_files;
-            self.fuzzy_total_matched = output.fuzzy_total_matched;
-            self.cumulative_grep_matched = output.grep_page_matched;
-            self.grep_next_file_offset = output.grep_next_file_offset;
-
-            // Record start offset for the next page so backward nav works.
-            let page_start_fuzzy = next_fuzzy_offset + self.exact_files.len() + self.other_files.len();
-            let page_start_grep = self.grep_next_file_offset;
-            self.unified_page_index += 1;
-            if self.unified_page_offsets.len() <= self.unified_page_index {
-                self.unified_page_offsets.push((page_start_fuzzy, page_start_grep));
-            }
-
-            self.selected = 0;
-            self.scroll_offset = 0;
-        } else {
-            let output = backend.search(
-                &self.query,
-                self.search_mode,
-                self.search_scope,
-                self.current_file.as_deref(),
-                self.force_combo_boost,
-                fuzzy_offset,
-                self.grep_next_file_offset,
-                self.page_size,
-            );
-
-            if output.results.is_empty() {
-                return;
-            }
-
-            if need_fuzzy {
-                self.exact_files.extend(output.exact_files);
-                self.other_files.extend(output.other_files);
-            }
-
-            if need_grep {
-                self.line_results.extend(output.line_results);
-                self.cumulative_grep_matched += output.grep_page_matched;
-                self.grep_next_file_offset = output.grep_next_file_offset;
-            }
-        }
-
-        self.rebuild_results();
+        self.background_rx = Some(rx);
     }
 
     // ── Navigation ───────────────────────────────────────────────────
 
-    fn move_selection(&mut self, delta: isize, backend: &PickerBackend) {
+    fn move_selection(&mut self, delta: isize) {
         if self.results.is_empty() {
             return;
         }
-
-        // In Unified mode, moving up past the top loads the previous page.
-        if self.search_scope == SearchScope::Unified
-            && delta < 0
-            && self.selected == 0
-            && self.unified_page_index > 0
-        {
-            self.load_unified_page(self.unified_page_index - 1, backend);
-            self.selected = self.results.len().saturating_sub(1);
-            self.ensure_visible();
-            return;
-        }
-
         let new = if delta < 0 {
             self.selected.saturating_sub(delta.unsigned_abs())
         } else {
@@ -476,7 +325,6 @@ impl App {
         };
         self.selected = new;
         self.ensure_visible();
-        self.maybe_load_more(backend);
     }
 
     fn move_selection_page(&mut self, pages: isize) {
@@ -495,38 +343,6 @@ impl App {
         };
         self.selected = new;
         self.ensure_visible();
-    }
-
-    fn load_unified_page(&mut self, page_index: usize, backend: &PickerBackend) {
-        if page_index >= self.unified_page_offsets.len() {
-            return;
-        }
-        let (fuzzy_offset, grep_file_offset) = self.unified_page_offsets[page_index];
-
-        let output = backend.search(
-            &self.query,
-            self.search_mode,
-            self.search_scope,
-            self.current_file.as_deref(),
-            self.force_combo_boost,
-            fuzzy_offset,
-            grep_file_offset,
-            self.page_size,
-        );
-
-        if output.results.is_empty() && page_index > 0 {
-            return;
-        }
-
-        self.exact_files = output.exact_files;
-        self.line_results = output.line_results;
-        self.other_files = output.other_files;
-        self.fuzzy_total_matched = output.fuzzy_total_matched;
-        self.cumulative_grep_matched = output.grep_page_matched;
-        self.grep_next_file_offset = output.grep_next_file_offset;
-        self.unified_page_index = page_index;
-
-        self.rebuild_results();
     }
 
     fn results_visible_count(&self) -> usize {
@@ -624,66 +440,6 @@ mod tests {
             absolute_path: path.into(),
             ..Default::default()
         }
-    }
-
-    fn make_line_result(path: &str, line: u64) -> UnifiedResult {
-        UnifiedResult {
-            kind: MatchKind::Line,
-            relative_path: path.into(),
-            absolute_path: path.into(),
-            line_number: Some(line),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn test_rebuild_results_unified() {
-        let mut app = App::new();
-        app.exact_files = vec![make_file_result("exact.rs")];
-        app.line_results = vec![
-            make_line_result("a.rs", 1),
-            make_line_result("a.rs", 5),
-            make_line_result("b.rs", 2),
-        ];
-        app.other_files = vec![make_file_result("other.rs")];
-        app.search_mode.group_grep = false;
-        app.fuzzy_total_matched = 2;
-        app.cumulative_grep_matched = 3;
-
-        app.rebuild_results();
-
-        assert_eq!(app.results.len(), 5);
-        assert_eq!(app.results[0].kind, MatchKind::File);
-        assert_eq!(app.results[1].kind, MatchKind::Line);
-        assert_eq!(app.results[4].kind, MatchKind::File);
-        assert_eq!(app.total_matched, 5);
-    }
-
-    #[test]
-    fn test_rebuild_results_grouped() {
-        let mut app = App::new();
-        app.exact_files = vec![make_file_result("exact.rs")];
-        app.line_results = vec![
-            make_line_result("a.rs", 1),
-            make_line_result("a.rs", 5),
-            make_line_result("b.rs", 2),
-        ];
-        app.other_files = vec![make_file_result("other.rs")];
-        app.search_mode.group_grep = true;
-        app.fuzzy_total_matched = 2;
-        app.cumulative_grep_matched = 3;
-
-        app.rebuild_results();
-
-        // exact + header(a) + line + line + header(b) + line + other
-        assert_eq!(app.results.len(), 7);
-        assert_eq!(app.results[0].kind, MatchKind::File); // exact
-        assert_eq!(app.results[1].kind, MatchKind::FileHeader); // a.rs
-        assert_eq!(app.results[2].kind, MatchKind::Line); // a.rs:1
-        assert_eq!(app.results[3].kind, MatchKind::Line); // a.rs:5
-        assert_eq!(app.results[4].kind, MatchKind::FileHeader); // b.rs
-        assert_eq!(app.results[5].kind, MatchKind::Line); // b.rs:2
-        assert_eq!(app.results[6].kind, MatchKind::File); // other
     }
 
     #[test]

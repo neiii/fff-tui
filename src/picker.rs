@@ -65,11 +65,6 @@ pub struct SearchOutput {
     pub highlight_query: String,
     pub fuzzy_total_matched: usize,
     pub grep_page_matched: usize,
-    pub grep_next_file_offset: usize,
-    /// Raw categories for infinite-scroll append.
-    pub exact_files: Vec<UnifiedResult>,
-    pub line_results: Vec<UnifiedResult>,
-    pub other_files: Vec<UnifiedResult>,
 }
 
 impl SearchOutput {
@@ -79,15 +74,12 @@ impl SearchOutput {
             highlight_query: query.to_string(),
             fuzzy_total_matched: 0,
             grep_page_matched: 0,
-            grep_next_file_offset: 0,
-            exact_files: Vec::new(),
-            line_results: Vec::new(),
-            other_files: Vec::new(),
         }
     }
 }
 
 /// Wrapper around fff-core's FilePicker that provides a sync API for the TUI.
+#[derive(Clone)]
 pub struct PickerBackend {
     shared_picker: SharedPicker,
     shared_frecency: SharedFrecency,
@@ -204,7 +196,7 @@ impl PickerBackend {
         tracker.get_historical_grep_query(&self.base_path, offset).ok().flatten()
     }
 
-    /// Perform a unified search (fuzzy file + content grep) and return owned results.
+    /// Perform a unified search (fuzzy file + content grep).
     pub fn search(
         &self,
         query: &str,
@@ -212,9 +204,8 @@ impl PickerBackend {
         scope: SearchScope,
         current_file: Option<&str>,
         force_combo: bool,
-        fuzzy_offset: usize,
-        grep_file_offset: usize,
         limit: usize,
+        time_budget_ms: u64,
     ) -> SearchOutput {
         let guard = match self.shared_picker.read() {
             Ok(g) => g,
@@ -257,7 +248,7 @@ impl PickerBackend {
                     project_path: Some(&self.base_path),
                     combo_boost_score_multiplier: if force_combo { 1 } else { 0 },
                     min_combo_count: if force_combo { 0 } else { 0 },
-                    pagination: PaginationArgs { offset: fuzzy_offset, limit },
+                    pagination: PaginationArgs { offset: 0, limit },
                 },
             );
 
@@ -304,8 +295,8 @@ impl PickerBackend {
             let grep_options = GrepSearchOptions {
                 mode: grep_mode,
                 smart_case: !mode.case_sensitive,
-                time_budget_ms: 200,
-                file_offset: grep_file_offset,
+                time_budget_ms,
+                file_offset: 0,
                 page_limit: limit,
                 classify_definitions: true,
                 ..Default::default()
@@ -377,10 +368,6 @@ impl PickerBackend {
             highlight_query,
             fuzzy_total_matched: total_matched.saturating_sub(grep_result_opt.as_ref().map(|g| g.matches.len()).unwrap_or(0)),
             grep_page_matched: grep_result_opt.as_ref().map(|g| g.matches.len()).unwrap_or(0),
-            grep_next_file_offset: grep_result_opt.as_ref().map(|g| g.next_file_offset).unwrap_or(0),
-            exact_files,
-            line_results,
-            other_files,
         }
     }
 
@@ -403,7 +390,7 @@ mod tests {
         let backend = PickerBackend::new(".").unwrap();
         // Wait for scan
         std::thread::sleep(std::time::Duration::from_millis(1000));
-        let output = backend.search("", SearchMode::default(), SearchScope::default(), None, false, 0, 0, 50);
+        let output = backend.search("", SearchMode::default(), SearchScope::default(), None, false, usize::MAX, 0);
         assert!(output.fuzzy_total_matched > 0 || backend.is_scanning());
     }
 
@@ -411,7 +398,7 @@ mod tests {
     fn test_search_with_query() {
         let backend = PickerBackend::new(".").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1000));
-        let output = backend.search("main", SearchMode::default(), SearchScope::default(), None, false, 0, 0, 50);
+        let output = backend.search("main", SearchMode::default(), SearchScope::default(), None, false, usize::MAX, 0);
         // Should find src/main.rs or similar
         let has_main = output.results.iter().any(|r| {
             r.relative_path.contains("main")
