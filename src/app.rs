@@ -42,6 +42,11 @@ pub struct App {
     pub grep_next_file_offset: usize,
     /// Backend batch size.
     pub page_size: usize,
+    // ── Unified pagination (page replacement) ──
+    /// Current page index when in Unified scope (0 = first page).
+    pub unified_page_index: usize,
+    /// Start offsets for each visited page: (fuzzy_offset, grep_file_offset).
+    pub unified_page_offsets: Vec<(usize, usize)>,
 }
 
 impl App {
@@ -76,6 +81,8 @@ impl App {
             cumulative_grep_matched: 0,
             grep_next_file_offset: 0,
             page_size: 500,
+            unified_page_index: 0,
+            unified_page_offsets: vec![(0, 0)],
         }
     }
 
@@ -278,6 +285,8 @@ impl App {
         self.fuzzy_total_matched = 0;
         self.cumulative_grep_matched = 0;
         self.grep_next_file_offset = 0;
+        self.unified_page_index = 0;
+        self.unified_page_offsets = vec![(0, 0)];
         self.selected = 0;
         self.scroll_offset = 0;
 
@@ -305,8 +314,9 @@ impl App {
         self.last_search_refresh = Instant::now();
 
         // If the screen isn't filled, try to load more immediately.
+        // Skip for Unified mode so the user sees page 0 before we replace it.
         let visible = self.results_visible_count();
-        if self.results.len() < visible.saturating_mul(2) {
+        if self.search_scope != SearchScope::Unified && self.results.len() < visible.saturating_mul(2) {
             self.maybe_load_more(backend);
         }
     }
@@ -351,7 +361,14 @@ impl App {
         if self.results.is_empty() {
             return;
         }
-        if self.selected + THRESHOLD < self.results.len() {
+
+        let remaining = self.results.len().saturating_sub(self.selected + 1);
+        let threshold = if self.search_scope == SearchScope::Unified {
+            0
+        } else {
+            THRESHOLD
+        };
+        if remaining > threshold {
             return;
         }
 
@@ -365,30 +382,69 @@ impl App {
             return;
         }
 
-        let output = backend.search(
-            &self.query,
-            self.search_mode,
-            self.search_scope,
-            self.current_file.as_deref(),
-            self.force_combo_boost,
-            fuzzy_offset,
-            self.grep_next_file_offset,
-            self.page_size,
-        );
+        if self.search_scope == SearchScope::Unified {
+            let next_fuzzy_offset = fuzzy_offset;
+            let next_grep_file_offset = self.grep_next_file_offset;
 
-        if output.results.is_empty() {
-            return;
-        }
+            let output = backend.search(
+                &self.query,
+                self.search_mode,
+                self.search_scope,
+                self.current_file.as_deref(),
+                self.force_combo_boost,
+                next_fuzzy_offset,
+                next_grep_file_offset,
+                self.page_size,
+            );
 
-        if need_fuzzy {
-            self.exact_files.extend(output.exact_files);
-            self.other_files.extend(output.other_files);
-        }
+            if output.results.is_empty() {
+                return;
+            }
 
-        if need_grep {
-            self.line_results.extend(output.line_results);
-            self.cumulative_grep_matched += output.grep_page_matched;
+            // Page replacement: discard current page and show the next one.
+            self.exact_files = output.exact_files;
+            self.line_results = output.line_results;
+            self.other_files = output.other_files;
+            self.fuzzy_total_matched = output.fuzzy_total_matched;
+            self.cumulative_grep_matched = output.grep_page_matched;
             self.grep_next_file_offset = output.grep_next_file_offset;
+
+            // Record start offset for the next page so backward nav works.
+            let page_start_fuzzy = next_fuzzy_offset + self.exact_files.len() + self.other_files.len();
+            let page_start_grep = self.grep_next_file_offset;
+            self.unified_page_index += 1;
+            if self.unified_page_offsets.len() <= self.unified_page_index {
+                self.unified_page_offsets.push((page_start_fuzzy, page_start_grep));
+            }
+
+            self.selected = 0;
+            self.scroll_offset = 0;
+        } else {
+            let output = backend.search(
+                &self.query,
+                self.search_mode,
+                self.search_scope,
+                self.current_file.as_deref(),
+                self.force_combo_boost,
+                fuzzy_offset,
+                self.grep_next_file_offset,
+                self.page_size,
+            );
+
+            if output.results.is_empty() {
+                return;
+            }
+
+            if need_fuzzy {
+                self.exact_files.extend(output.exact_files);
+                self.other_files.extend(output.other_files);
+            }
+
+            if need_grep {
+                self.line_results.extend(output.line_results);
+                self.cumulative_grep_matched += output.grep_page_matched;
+                self.grep_next_file_offset = output.grep_next_file_offset;
+            }
         }
 
         self.rebuild_results();
@@ -400,6 +456,19 @@ impl App {
         if self.results.is_empty() {
             return;
         }
+
+        // In Unified mode, moving up past the top loads the previous page.
+        if self.search_scope == SearchScope::Unified
+            && delta < 0
+            && self.selected == 0
+            && self.unified_page_index > 0
+        {
+            self.load_unified_page(self.unified_page_index - 1, backend);
+            self.selected = self.results.len().saturating_sub(1);
+            self.ensure_visible();
+            return;
+        }
+
         let new = if delta < 0 {
             self.selected.saturating_sub(delta.unsigned_abs())
         } else {
@@ -426,6 +495,38 @@ impl App {
         };
         self.selected = new;
         self.ensure_visible();
+    }
+
+    fn load_unified_page(&mut self, page_index: usize, backend: &PickerBackend) {
+        if page_index >= self.unified_page_offsets.len() {
+            return;
+        }
+        let (fuzzy_offset, grep_file_offset) = self.unified_page_offsets[page_index];
+
+        let output = backend.search(
+            &self.query,
+            self.search_mode,
+            self.search_scope,
+            self.current_file.as_deref(),
+            self.force_combo_boost,
+            fuzzy_offset,
+            grep_file_offset,
+            self.page_size,
+        );
+
+        if output.results.is_empty() && page_index > 0 {
+            return;
+        }
+
+        self.exact_files = output.exact_files;
+        self.line_results = output.line_results;
+        self.other_files = output.other_files;
+        self.fuzzy_total_matched = output.fuzzy_total_matched;
+        self.cumulative_grep_matched = output.grep_page_matched;
+        self.grep_next_file_offset = output.grep_next_file_offset;
+        self.unified_page_index = page_index;
+
+        self.rebuild_results();
     }
 
     fn results_visible_count(&self) -> usize {
