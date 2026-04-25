@@ -335,6 +335,16 @@ impl PickerBackend {
         }
 
         // 3. Assemble final results
+        // In unified mode, suppress weak fuzzy path matches when there are
+        // content results. The fuzzy matcher is very permissive (max_typos
+        // scales with query length), so short queries like "struct" can
+        // match almost every file path. Without a cutoff, dozens of
+        // unrelated files get appended after grep results.
+        if scope == SearchScope::Unified && !line_results.is_empty() {
+            let min_score = highlight_query.len().saturating_mul(7) as i32;
+            other_files.retain(|f| f.score >= min_score);
+        }
+
         let mut unified = Vec::with_capacity(exact_files.len() + line_results.len() + other_files.len());
         unified.extend(exact_files.clone());
 
@@ -405,5 +415,65 @@ mod tests {
                 || r.line_content.as_ref().is_some_and(|c| c.contains("main"))
         });
         assert!(has_main || output.fuzzy_total_matched == 0);
+    }
+
+    #[test]
+    fn test_unified_search_filters_weak_fuzzy_matches() {
+        // Use the parent monorepo so there are enough files to produce weak
+        // fuzzy matches for "struct".
+        let backend = PickerBackend::new("../fff.nvim").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(3000));
+
+        let unified = backend.search(
+            "struct",
+            SearchMode::default(),
+            SearchScope::Unified,
+            None,
+            false,
+            usize::MAX,
+            0,
+        );
+
+        // There should be grep results, otherwise the test premise is wrong.
+        assert!(
+            unified.grep_page_matched > 0,
+            "expected grep matches for 'struct'"
+        );
+
+        // fuzzy_total_matched must still report the *true* total from the
+        // backend (before filtering).
+        assert!(
+            unified.fuzzy_total_matched >= 10,
+            "expected many fuzzy path matches for 'struct'"
+        );
+
+        // Weak matches like git.rs (score 35) should be filtered out in
+        // unified mode because the min_score threshold for a 6-char query
+        // is 42.
+        let has_git_rs = unified.results.iter().any(|r| {
+            r.kind == MatchKind::File && r.relative_path.ends_with("git.rs")
+        });
+        assert!(
+            !has_git_rs,
+            "git.rs should be filtered out in unified mode (weak fuzzy match)"
+        );
+
+        // In FileOnly mode the same weak match should still appear.
+        let file_only = backend.search(
+            "struct",
+            SearchMode::default(),
+            SearchScope::FileOnly,
+            None,
+            false,
+            usize::MAX,
+            0,
+        );
+        let has_git_rs_file_only = file_only.results.iter().any(|r| {
+            r.kind == MatchKind::File && r.relative_path.ends_with("git.rs")
+        });
+        assert!(
+            has_git_rs_file_only,
+            "git.rs should appear in FileOnly mode"
+        );
     }
 }
