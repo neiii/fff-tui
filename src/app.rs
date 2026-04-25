@@ -286,7 +286,9 @@ impl App {
         let page_size = self.results_visible_count().max(20);
         self.page_size = page_size;
 
-        if self.search_scope != SearchScope::GrepOnly {
+        // Only enforce fuzzy page bounds for FileOnly mode.
+        // Unified may still have grep results even when fuzzy is exhausted.
+        if self.search_scope == SearchScope::FileOnly {
             let total = self.fuzzy_total_matched;
             if total > 0 {
                 let max_page = (total.saturating_sub(1) / page_size).max(0);
@@ -305,7 +307,12 @@ impl App {
         let grep_file_offset = if self.search_scope != SearchScope::FileOnly
             && !self.query.is_empty()
         {
-            *self.grep_file_offsets.get(page_index).unwrap_or(&0)
+            // Lua extension returns false when the offset for this page is
+            // unknown (shouldn't happen in normal forward/backward flow).
+            match self.grep_file_offsets.get(page_index) {
+                Some(&offset) => offset,
+                None => return false,
+            }
         } else {
             0
         };
