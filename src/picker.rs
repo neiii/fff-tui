@@ -65,6 +65,12 @@ pub struct SearchOutput {
     pub total_matched: usize,
     pub highlight_query: String,
     pub searchable_files: usize,
+    pub fuzzy_total_matched: usize,
+    pub grep_page_matched: usize,
+    pub grep_next_file_offset: usize,
+    pub exact_files: Vec<UnifiedResult>,
+    pub line_results: Vec<UnifiedResult>,
+    pub other_files: Vec<UnifiedResult>,
 }
 
 impl SearchOutput {
@@ -74,6 +80,12 @@ impl SearchOutput {
             total_matched: 0,
             highlight_query: query.to_string(),
             searchable_files: 0,
+            fuzzy_total_matched: 0,
+            grep_page_matched: 0,
+            grep_next_file_offset: 0,
+            exact_files: Vec::new(),
+            line_results: Vec::new(),
+            other_files: Vec::new(),
         }
     }
 }
@@ -203,6 +215,8 @@ impl PickerBackend {
         scope: SearchScope,
         current_file: Option<&str>,
         force_combo: bool,
+        fuzzy_offset: usize,
+        grep_file_offset: usize,
         limit: usize,
     ) -> SearchOutput {
         let guard = match self.shared_picker.read() {
@@ -246,7 +260,7 @@ impl PickerBackend {
                     project_path: Some(&self.base_path),
                     combo_boost_score_multiplier: if force_combo { 1 } else { 0 },
                     min_combo_count: if force_combo { 0 } else { 0 },
-                    pagination: PaginationArgs { offset: 0, limit },
+                    pagination: PaginationArgs { offset: fuzzy_offset, limit },
                 },
             );
 
@@ -279,6 +293,7 @@ impl PickerBackend {
         // 2. Grep search for non-empty queries
         let mut line_results = Vec::new();
         let mut searchable_files = 0usize;
+        let mut grep_result_opt = None;
 
         if scope != SearchScope::FileOnly && !highlight_query.is_empty() {
             let grep_mode = if mode.fuzzy {
@@ -293,6 +308,7 @@ impl PickerBackend {
                 mode: grep_mode,
                 smart_case: !mode.case_sensitive,
                 time_budget_ms: 200,
+                file_offset: grep_file_offset,
                 page_limit: limit,
                 classify_definitions: true,
                 ..Default::default()
@@ -326,16 +342,18 @@ impl PickerBackend {
                     git_status: format_git_status_opt(file.git_status).map(|s| s.to_string()),
                 });
             }
+
+            grep_result_opt = Some(grep_result);
         }
 
         // 3. Assemble final results
-        let mut unified = Vec::with_capacity(limit);
-        unified.extend(exact_files);
+        let mut unified = Vec::with_capacity(exact_files.len() + line_results.len() + other_files.len());
+        unified.extend(exact_files.clone());
 
         if mode.group_grep && !line_results.is_empty() {
             let mut grouped = Vec::new();
             let mut last_path: Option<String> = None;
-            for r in line_results {
+            for r in &line_results {
                 if last_path.as_ref() != Some(&r.relative_path) {
                     grouped.push(UnifiedResult {
                         kind: MatchKind::FileHeader,
@@ -348,21 +366,26 @@ impl PickerBackend {
                     });
                     last_path = Some(r.relative_path.clone());
                 }
-                grouped.push(r);
+                grouped.push(r.clone());
             }
             unified.extend(grouped);
         } else {
-            unified.extend(line_results);
+            unified.extend(line_results.clone());
         }
 
-        unified.extend(other_files);
-        unified.truncate(limit);
+        unified.extend(other_files.clone());
 
         SearchOutput {
             results: unified,
             total_matched,
             highlight_query,
             searchable_files,
+            fuzzy_total_matched: total_matched.saturating_sub(grep_result_opt.as_ref().map(|g| g.matches.len()).unwrap_or(0)),
+            grep_page_matched: grep_result_opt.as_ref().map(|g| g.matches.len()).unwrap_or(0),
+            grep_next_file_offset: grep_result_opt.as_ref().map(|g| g.next_file_offset).unwrap_or(0),
+            exact_files,
+            line_results,
+            other_files,
         }
     }
 
@@ -385,7 +408,7 @@ mod tests {
         let backend = PickerBackend::new(".").unwrap();
         // Wait for scan
         std::thread::sleep(std::time::Duration::from_millis(1000));
-        let output = backend.search("", SearchMode::default(), SearchScope::default(), None, false, 50);
+        let output = backend.search("", SearchMode::default(), SearchScope::default(), None, false, 0, 0, 50);
         assert!(output.total_matched > 0 || backend.is_scanning());
     }
 
@@ -393,7 +416,7 @@ mod tests {
     fn test_search_with_query() {
         let backend = PickerBackend::new(".").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1000));
-        let output = backend.search("main", SearchMode::default(), SearchScope::default(), None, false, 50);
+        let output = backend.search("main", SearchMode::default(), SearchScope::default(), None, false, 0, 0, 50);
         // Should find src/main.rs or similar
         let has_main = output.results.iter().any(|r| {
             r.relative_path.contains("main")
