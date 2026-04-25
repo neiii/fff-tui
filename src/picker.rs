@@ -62,20 +62,27 @@ pub struct UnifiedResult {
 /// Output of a search operation.
 pub struct SearchOutput {
     pub results: Vec<UnifiedResult>,
-    pub total_matched: usize,
     pub highlight_query: String,
     pub fuzzy_total_matched: usize,
+    pub grep_page_matched: usize,
     pub grep_next_file_offset: usize,
+    /// Raw categories for infinite-scroll append.
+    pub exact_files: Vec<UnifiedResult>,
+    pub line_results: Vec<UnifiedResult>,
+    pub other_files: Vec<UnifiedResult>,
 }
 
 impl SearchOutput {
     fn empty(query: &str) -> Self {
         Self {
             results: Vec::new(),
-            total_matched: 0,
             highlight_query: query.to_string(),
             fuzzy_total_matched: 0,
+            grep_page_matched: 0,
             grep_next_file_offset: 0,
+            exact_files: Vec::new(),
+            line_results: Vec::new(),
+            other_files: Vec::new(),
         }
     }
 }
@@ -367,10 +374,13 @@ impl PickerBackend {
 
         SearchOutput {
             results: unified,
-            total_matched,
             highlight_query,
             fuzzy_total_matched: total_matched.saturating_sub(grep_result_opt.as_ref().map(|g| g.matches.len()).unwrap_or(0)),
+            grep_page_matched: grep_result_opt.as_ref().map(|g| g.matches.len()).unwrap_or(0),
             grep_next_file_offset: grep_result_opt.as_ref().map(|g| g.next_file_offset).unwrap_or(0),
+            exact_files,
+            line_results,
+            other_files,
         }
     }
 
@@ -394,7 +404,7 @@ mod tests {
         // Wait for scan
         std::thread::sleep(std::time::Duration::from_millis(1000));
         let output = backend.search("", SearchMode::default(), SearchScope::default(), None, false, 0, 0, 50);
-        assert!(output.total_matched > 0 || backend.is_scanning());
+        assert!(output.fuzzy_total_matched > 0 || backend.is_scanning());
     }
 
     #[test]
@@ -407,6 +417,6 @@ mod tests {
             r.relative_path.contains("main")
                 || r.line_content.as_ref().is_some_and(|c| c.contains("main"))
         });
-        assert!(has_main || output.total_matched == 0);
+        assert!(has_main || output.fuzzy_total_matched == 0);
     }
 }

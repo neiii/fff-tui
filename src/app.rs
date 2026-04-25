@@ -1,4 +1,4 @@
-use crate::picker::{selection_key, PickerBackend, SearchMode, SearchScope, UnifiedResult};
+use crate::picker::{selection_key, MatchKind, PickerBackend, SearchMode, SearchScope, UnifiedResult};
 use crate::theme::Theme;
 use crate::ui::{draw, UiState};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -28,17 +28,22 @@ pub struct App {
     pub current_file: Option<String>,
     pub force_combo_boost: bool,
     pub query_history_offset: usize,
-    // ── Pagination state (page-replacement model, matching fff.nvim) ──
-    pub page_size: usize,
-    pub page_index: usize,
-    /// For grep file-based pagination. `grep_file_offsets[i]` is the
-    /// `file_offset` to use for page `i`.  Index 0 always starts at 0.
-    pub grep_file_offsets: Vec<usize>,
-    /// True total fuzzy matches (independent of pagination).  Used to
-    /// calculate `max_page_index` for fuzzy / unified scopes.
+    // ── Infinite-scroll pagination state ──
+    /// Raw result categories.  Kept separate so we can append new pages
+    /// while preserving the unified stacking order.
+    pub exact_files: Vec<UnifiedResult>,
+    pub line_results: Vec<UnifiedResult>,
+    pub other_files: Vec<UnifiedResult>,
+    /// True total fuzzy matches (reported by backend for offset 0).
     pub fuzzy_total_matched: usize,
-    /// Whether the last grep search reported more files (`next_file_offset > 0`).
-    pub grep_has_more: bool,
+    /// Cumulative grep matches loaded across all pages.
+    pub cumulative_grep_matched: usize,
+    /// Next file offset for grep (0 = no more).
+    pub grep_next_file_offset: usize,
+    /// Backend batch size.
+    pub page_size: usize,
+    /// Cooldown tracker for load-more calls.
+    pub last_load_more: Instant,
 }
 
 impl App {
@@ -66,11 +71,14 @@ impl App {
             current_file: None,
             force_combo_boost: false,
             query_history_offset: 0,
-            page_size: 500,
-            page_index: 0,
-            grep_file_offsets: vec![0],
+            exact_files: Vec::new(),
+            line_results: Vec::new(),
+            other_files: Vec::new(),
             fuzzy_total_matched: 0,
-            grep_has_more: false,
+            cumulative_grep_matched: 0,
+            grep_next_file_offset: 0,
+            page_size: 500,
+            last_load_more: Instant::now(),
         }
     }
 
@@ -83,9 +91,6 @@ impl App {
         let mut dump_frame = 0usize;
 
         // ── Open immediately (like Lua extension) ──
-        // Do NOT block on the background scan.  Search against whatever
-        // files are already indexed; the periodic refresh below will pick
-        // up new files as they arrive.
         self.refresh_search(backend);
 
         while !self.should_quit && !self.should_select {
@@ -261,6 +266,7 @@ impl App {
             KeyCode::End if !self.results.is_empty() => {
                 self.selected = self.results.len() - 1;
                 self.ensure_visible();
+                self.maybe_load_more(backend);
             }
             _ => {}
         }
@@ -269,53 +275,103 @@ impl App {
     // ── Search & Pagination ──────────────────────────────────────────
 
     pub(crate) fn refresh_search(&mut self, backend: &PickerBackend) {
-        self.page_index = 0;
-        self.grep_file_offsets = vec![0];
+        self.exact_files.clear();
+        self.line_results.clear();
+        self.other_files.clear();
         self.fuzzy_total_matched = 0;
-        self.grep_has_more = false;
+        self.cumulative_grep_matched = 0;
+        self.grep_next_file_offset = 0;
         self.selected = 0;
         self.scroll_offset = 0;
-        let _ = self.load_page_at_index(0, backend);
+
+        let output = backend.search(
+            &self.query,
+            self.search_mode,
+            self.search_scope,
+            self.current_file.as_deref(),
+            self.force_combo_boost,
+            0,
+            0,
+            self.page_size,
+        );
+
+        self.exact_files = output.exact_files;
+        self.line_results = output.line_results;
+        self.other_files = output.other_files;
+        self.fuzzy_total_matched = output.fuzzy_total_matched;
+        self.cumulative_grep_matched = output.grep_page_matched;
+        self.grep_next_file_offset = output.grep_next_file_offset;
+        self.highlight_query = output.highlight_query;
+
+        self.rebuild_results();
         self.total_files = backend.total_files();
         self.last_search_refresh = Instant::now();
+        self.last_load_more = Instant::now();
+
+        // If the screen isn't filled, try to load more immediately.
+        let visible = self.results_visible_count();
+        if self.results.len() < visible.saturating_mul(2) {
+            self.maybe_load_more(backend);
+        }
     }
 
-    /// Load a specific page by index (0-based).  Returns `true` on success.
-    /// This mirrors `picker_ui.lua:M.load_page_at_index()`.
-    fn load_page_at_index(&mut self, page_index: usize, backend: &PickerBackend) -> bool {
-        let page_size = self.results_visible_count().max(20);
-        self.page_size = page_size;
+    fn rebuild_results(&mut self) {
+        let mut unified = Vec::with_capacity(
+            self.exact_files.len() + self.line_results.len() + self.other_files.len(),
+        );
+        unified.extend(self.exact_files.clone());
 
-        // Only enforce fuzzy page bounds for FileOnly mode.
-        // Unified may still have grep results even when fuzzy is exhausted.
-        if self.search_scope == SearchScope::FileOnly {
-            let total = self.fuzzy_total_matched;
-            if total > 0 {
-                let max_page = (total.saturating_sub(1) / page_size).max(0);
-                if page_index > max_page {
-                    return false;
+        if self.search_mode.group_grep && !self.line_results.is_empty() {
+            let mut grouped = Vec::new();
+            let mut last_path: Option<String> = None;
+            for r in &self.line_results {
+                if last_path.as_ref() != Some(&r.relative_path) {
+                    grouped.push(UnifiedResult {
+                        kind: MatchKind::FileHeader,
+                        relative_path: r.relative_path.clone(),
+                        absolute_path: r.absolute_path.clone(),
+                        score: 0,
+                        exact_match: false,
+                        git_status: r.git_status.clone(),
+                        ..Default::default()
+                    });
+                    last_path = Some(r.relative_path.clone());
                 }
+                grouped.push(r.clone());
             }
+            unified.extend(grouped);
+        } else {
+            unified.extend(self.line_results.clone());
         }
 
-        let fuzzy_offset = if self.search_scope != SearchScope::GrepOnly {
-            page_index * page_size
-        } else {
-            0
-        };
+        unified.extend(self.other_files.clone());
+        self.results = unified;
+        self.total_matched = self.fuzzy_total_matched + self.cumulative_grep_matched;
+    }
 
-        let grep_file_offset = if self.search_scope != SearchScope::FileOnly
-            && !self.query.is_empty()
-        {
-            // Lua extension returns false when the offset for this page is
-            // unknown (shouldn't happen in normal forward/backward flow).
-            match self.grep_file_offsets.get(page_index) {
-                Some(&offset) => offset,
-                None => return false,
-            }
-        } else {
-            0
-        };
+    fn maybe_load_more(&mut self, backend: &PickerBackend) {
+        const THRESHOLD: usize = 10;
+        const COOLDOWN_MS: u64 = 100;
+
+        if self.results.is_empty() {
+            return;
+        }
+        if self.selected + THRESHOLD < self.results.len() {
+            return;
+        }
+        if self.last_load_more.elapsed() < Duration::from_millis(COOLDOWN_MS) {
+            return;
+        }
+
+        let fuzzy_offset = self.exact_files.len() + self.other_files.len();
+        let need_fuzzy = self.search_scope != SearchScope::GrepOnly
+            && fuzzy_offset < self.fuzzy_total_matched;
+        let need_grep = self.search_scope != SearchScope::FileOnly
+            && self.grep_next_file_offset > 0;
+
+        if !need_fuzzy && !need_grep {
+            return;
+        }
 
         let output = backend.search(
             &self.query,
@@ -324,73 +380,27 @@ impl App {
             self.current_file.as_deref(),
             self.force_combo_boost,
             fuzzy_offset,
-            grep_file_offset,
-            page_size,
+            self.grep_next_file_offset,
+            self.page_size,
         );
 
-        if output.results.is_empty() && page_index > 0 {
-            return false;
+        if output.results.is_empty() {
+            return;
         }
 
-        self.results = output.results;
-        self.total_matched = output.total_matched;
-        self.highlight_query = output.highlight_query;
-        self.fuzzy_total_matched = output.fuzzy_total_matched;
-        self.grep_has_more = output.grep_next_file_offset > 0;
-        self.page_index = page_index;
-
-        // Record / update grep file offsets so forward/backward navigation works.
-        if page_index >= self.grep_file_offsets.len() {
-            self.grep_file_offsets.resize(page_index + 1, 0);
-        }
-        self.grep_file_offsets[page_index] = grep_file_offset;
-        if output.grep_next_file_offset > 0 {
-            if page_index + 1 >= self.grep_file_offsets.len() {
-                self.grep_file_offsets.push(output.grep_next_file_offset);
-            } else {
-                self.grep_file_offsets[page_index + 1] = output.grep_next_file_offset;
-            }
+        if need_fuzzy {
+            self.exact_files.extend(output.exact_files);
+            self.other_files.extend(output.other_files);
         }
 
-        true
-    }
+        if need_grep {
+            self.line_results.extend(output.line_results);
+            self.cumulative_grep_matched += output.grep_page_matched;
+            self.grep_next_file_offset = output.grep_next_file_offset;
+        }
 
-    fn load_next_page(&mut self, backend: &PickerBackend) -> bool {
-        if !self.has_more_pages() {
-            return false;
-        }
-        let ok = self.load_page_at_index(self.page_index + 1, backend);
-        if ok {
-            self.selected = 0;
-            self.scroll_offset = 0;
-        }
-        ok
-    }
-
-    fn load_previous_page(&mut self, backend: &PickerBackend) -> bool {
-        if self.page_index == 0 {
-            return false;
-        }
-        let ok = self.load_page_at_index(self.page_index - 1, backend);
-        if ok {
-            self.selected = self.results.len().saturating_sub(1);
-            self.ensure_visible();
-        }
-        ok
-    }
-
-    fn has_more_pages(&self) -> bool {
-        if self.search_scope == SearchScope::GrepOnly {
-            self.grep_has_more
-        } else {
-            let page_size = self.results_visible_count().max(20);
-            let max_page = if self.fuzzy_total_matched > 0 {
-                (self.fuzzy_total_matched.saturating_sub(1) / page_size).max(0)
-            } else {
-                0
-            };
-            self.page_index < max_page || self.grep_has_more
-        }
+        self.rebuild_results();
+        self.last_load_more = Instant::now();
     }
 
     // ── Navigation ───────────────────────────────────────────────────
@@ -399,30 +409,14 @@ impl App {
         if self.results.is_empty() {
             return;
         }
-
-        if delta > 0 {
-            // Moving toward worse results (Down).
-            let new = self.selected.saturating_add(delta as usize);
-            if new >= self.results.len() {
-                // At last item → try next page (like Lua move_down + near_bottom).
-                if self.load_next_page(backend) {
-                    return;
-                }
-                self.selected = self.results.len() - 1;
-            } else {
-                self.selected = new;
-            }
+        let new = if delta < 0 {
+            self.selected.saturating_sub(delta.unsigned_abs())
         } else {
-            // Moving toward better results (Up).
-            let abs = delta.unsigned_abs();
-            if self.selected == 0 && abs > 0 && self.page_index > 0 {
-                // At first item → try previous page (like Lua move_up).
-                self.load_previous_page(backend);
-                return;
-            }
-            self.selected = self.selected.saturating_sub(abs);
-        }
+            self.selected.saturating_add(delta as usize).min(self.results.len() - 1)
+        };
+        self.selected = new;
         self.ensure_visible();
+        self.maybe_load_more(backend);
     }
 
     fn move_selection_page(&mut self, pages: isize) {
@@ -430,7 +424,6 @@ impl App {
         self.move_selection_raw(pages * page_size);
     }
 
-    /// Move cursor without triggering page loads (used by PageUp/PageDown).
     fn move_selection_raw(&mut self, delta: isize) {
         if self.results.is_empty() {
             return;
@@ -541,60 +534,64 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_page_index_reset_on_refresh() {
-        let mut app = App::new();
-        app.page_index = 3;
-        app.grep_file_offsets = vec![0, 50, 100, 150];
-        // refresh_search resets pagination (but we can't call it without a backend)
-        // So just verify the struct fields reset correctly if we do it manually:
-        app.page_index = 0;
-        app.grep_file_offsets = vec![0];
-        assert_eq!(app.page_index, 0);
-        assert_eq!(app.grep_file_offsets, vec![0]);
+    fn make_line_result(path: &str, line: u64) -> UnifiedResult {
+        UnifiedResult {
+            kind: MatchKind::Line,
+            relative_path: path.into(),
+            absolute_path: path.into(),
+            line_number: Some(line),
+            ..Default::default()
+        }
     }
 
     #[test]
-    fn test_has_more_pages_fuzzy() {
+    fn test_rebuild_results_unified() {
         let mut app = App::new();
-        app.terminal_height = 30; // visible ~24
-        app.fuzzy_total_matched = 100;
-        app.page_index = 0;
-        app.grep_has_more = false;
-        // page_size = 24, max_page = (100-1)/24 = 4, so page_index 0 < 4 → has more
-        assert!(app.has_more_pages());
+        app.exact_files = vec![make_file_result("exact.rs")];
+        app.line_results = vec![
+            make_line_result("a.rs", 1),
+            make_line_result("a.rs", 5),
+            make_line_result("b.rs", 2),
+        ];
+        app.other_files = vec![make_file_result("other.rs")];
+        app.search_mode.group_grep = false;
+        app.fuzzy_total_matched = 2;
+        app.cumulative_grep_matched = 3;
 
-        app.page_index = 4;
-        // page_index == max_page → no more fuzzy pages
-        assert!(!app.has_more_pages());
+        app.rebuild_results();
 
-        app.grep_has_more = true;
-        // But grep still has more (Unified scope)
-        assert!(app.has_more_pages());
+        assert_eq!(app.results.len(), 5);
+        assert_eq!(app.results[0].kind, MatchKind::File);
+        assert_eq!(app.results[1].kind, MatchKind::Line);
+        assert_eq!(app.results[4].kind, MatchKind::File);
+        assert_eq!(app.total_matched, 5);
     }
 
     #[test]
-    fn test_has_more_pages_grep_only() {
+    fn test_rebuild_results_grouped() {
         let mut app = App::new();
-        app.search_scope = SearchScope::GrepOnly;
-        app.grep_has_more = true;
-        assert!(app.has_more_pages());
+        app.exact_files = vec![make_file_result("exact.rs")];
+        app.line_results = vec![
+            make_line_result("a.rs", 1),
+            make_line_result("a.rs", 5),
+            make_line_result("b.rs", 2),
+        ];
+        app.other_files = vec![make_file_result("other.rs")];
+        app.search_mode.group_grep = true;
+        app.fuzzy_total_matched = 2;
+        app.cumulative_grep_matched = 3;
 
-        app.grep_has_more = false;
-        assert!(!app.has_more_pages());
-    }
+        app.rebuild_results();
 
-    #[test]
-    fn test_grep_file_offsets_growth() {
-        let mut app = App::new();
-        app.grep_file_offsets = vec![0];
-        // Simulate recording offset for page 1
-        app.grep_file_offsets.push(47);
-        assert_eq!(app.grep_file_offsets, vec![0, 47]);
-
-        // Overwrite page 1 offset
-        app.grep_file_offsets[1] = 52;
-        assert_eq!(app.grep_file_offsets, vec![0, 52]);
+        // exact + header(a) + line + line + header(b) + line + other
+        assert_eq!(app.results.len(), 7);
+        assert_eq!(app.results[0].kind, MatchKind::File); // exact
+        assert_eq!(app.results[1].kind, MatchKind::FileHeader); // a.rs
+        assert_eq!(app.results[2].kind, MatchKind::Line); // a.rs:1
+        assert_eq!(app.results[3].kind, MatchKind::Line); // a.rs:5
+        assert_eq!(app.results[4].kind, MatchKind::FileHeader); // b.rs
+        assert_eq!(app.results[5].kind, MatchKind::Line); // b.rs:2
+        assert_eq!(app.results[6].kind, MatchKind::File); // other
     }
 
     #[test]
