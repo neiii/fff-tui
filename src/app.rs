@@ -42,8 +42,6 @@ pub struct App {
     pub grep_next_file_offset: usize,
     /// Backend batch size.
     pub page_size: usize,
-    /// Cooldown tracker for load-more calls.
-    pub last_load_more: Instant,
 }
 
 impl App {
@@ -78,7 +76,6 @@ impl App {
             cumulative_grep_matched: 0,
             grep_next_file_offset: 0,
             page_size: 500,
-            last_load_more: Instant::now(),
         }
     }
 
@@ -306,7 +303,6 @@ impl App {
         self.rebuild_results();
         self.total_files = backend.total_files();
         self.last_search_refresh = Instant::now();
-        self.last_load_more = Instant::now();
 
         // If the screen isn't filled, try to load more immediately.
         let visible = self.results_visible_count();
@@ -351,15 +347,11 @@ impl App {
 
     fn maybe_load_more(&mut self, backend: &PickerBackend) {
         const THRESHOLD: usize = 10;
-        const COOLDOWN_MS: u64 = 100;
 
         if self.results.is_empty() {
             return;
         }
         if self.selected + THRESHOLD < self.results.len() {
-            return;
-        }
-        if self.last_load_more.elapsed() < Duration::from_millis(COOLDOWN_MS) {
             return;
         }
 
@@ -400,7 +392,6 @@ impl App {
         }
 
         self.rebuild_results();
-        self.last_load_more = Instant::now();
     }
 
     // ── Navigation ───────────────────────────────────────────────────
