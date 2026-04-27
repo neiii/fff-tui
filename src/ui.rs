@@ -143,11 +143,6 @@ fn draw_input_box(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme)
     .alignment(Alignment::Right);
     frame.render_widget(counter, chunks[2]);
 
-    // Cursor position
-    let cursor_x = chunks[1].x + state.query.width() as u16;
-    if cursor_x < chunks[1].x + chunks[1].width {
-        frame.set_cursor_position((cursor_x, chunks[1].y));
-    }
 }
 
 fn draw_result_list(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
@@ -175,7 +170,7 @@ fn draw_result_list(frame: &mut Frame, area: Rect, state: &UiState, theme: &Them
         let placeholder = if state.is_scanning && state.results.is_empty() {
             "Scanning files…"
         } else if state.query.is_empty() {
-            "Type to search files…"
+            "No files found"
         } else {
             "No matches found"
         };

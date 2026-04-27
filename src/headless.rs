@@ -23,13 +23,19 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
     let tick_rate = Duration::from_millis(50);
     let mut frame = 0usize;
 
-    // Phase 1: simulate scanning wait
+    // Initial search (like real App::run)
+    app.refresh_search(backend);
+
+    // Phase 1: simulate scanning wait with auto-refresh
     while backend.is_scanning() && scan_start.elapsed() < scan_timeout && frame < max_frames {
         if app.last_spinner_tick.elapsed() > Duration::from_millis(80) {
             app.spinner_frame += 1;
             app.last_spinner_tick = Instant::now();
         }
         app.total_files = backend.total_files();
+        if app.last_search_refresh.elapsed() > Duration::from_millis(200) {
+            app.refresh_search(backend);
+        }
         app.terminal_width = 120;
         app.terminal_height = 40;
 
@@ -62,8 +68,10 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
         std::thread::sleep(tick_rate);
     }
 
-    // Initial search
-    app.refresh_search(backend);
+    // If scan finished but we still have no results for empty query, refresh once more.
+    if app.query.is_empty() && app.results.is_empty() {
+        app.refresh_search(backend);
+    }
 
     // Simulate a few frames of idle state
     for _ in 0..max_frames.saturating_sub(frame).min(10) {
@@ -72,7 +80,9 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             app.last_spinner_tick = Instant::now();
         }
         let is_scanning = backend.is_scanning();
-        if is_scanning && app.last_search_refresh.elapsed() > Duration::from_millis(200) {
+        let needs_refresh = is_scanning
+            || (app.query.is_empty() && app.results.is_empty());
+        if needs_refresh && app.last_search_refresh.elapsed() > Duration::from_millis(200) {
             app.refresh_search(backend);
         }
         app.terminal_height = 40;

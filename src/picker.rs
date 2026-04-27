@@ -405,6 +405,19 @@ mod tests {
     }
 
     #[test]
+    fn test_search_empty_query_with_limits() {
+        let backend = PickerBackend::new(".").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        let output = backend.search("", SearchMode::default(), SearchScope::default(), None, false, 200, 150);
+        println!("results: {}", output.results.len());
+        println!("fuzzy_total: {}", output.fuzzy_total_matched);
+        for r in output.results.iter().take(5) {
+            println!("  {}", r.relative_path);
+        }
+        assert!(output.fuzzy_total_matched > 0 || backend.is_scanning(), "expected results or still scanning");
+    }
+
+    #[test]
     fn test_search_with_query() {
         let backend = PickerBackend::new(".").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1000));

@@ -69,6 +69,9 @@ impl App {
         let tick_rate = Duration::from_millis(50);
         let mut dump_frame = 0usize;
 
+        // Hide the blinking hardware cursor — we render our own input state.
+        terminal.hide_cursor()?;
+
         // ── Open immediately (like Lua extension) ──
         self.refresh_search(backend);
 
@@ -98,11 +101,16 @@ impl App {
 
             // Refresh search periodically while scanning so files appear
             // incrementally (matching Lua's monitor_scan_progress).
+            // Also refresh when the query is empty but we still have no
+            // results, which happens if the scan finished between the
+            // initial refresh and the first timer tick.
+            let needs_refresh = is_scanning
+                || (self.query.is_empty() && self.results.is_empty());
+            if needs_refresh && self.last_search_refresh.elapsed() > Duration::from_millis(200) {
+                self.refresh_search(backend);
+            }
             if is_scanning {
                 self.total_files = backend.total_files();
-                if self.last_search_refresh.elapsed() > Duration::from_millis(200) {
-                    self.refresh_search(backend);
-                }
             }
 
             if let Ok(size) = terminal.size() {
@@ -222,12 +230,32 @@ impl App {
                 }
             }
             KeyCode::Backspace => {
-                self.query.pop();
-                self.refresh_search(backend);
+                if key.modifiers.contains(KeyModifiers::SUPER) {
+                    self.query.clear();
+                    self.refresh_search(backend);
+                } else if key.modifiers.contains(KeyModifiers::ALT)
+                    || key.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    self.delete_word_backward();
+                    self.refresh_search(backend);
+                } else {
+                    self.query.pop();
+                    self.refresh_search(backend);
+                }
             }
             KeyCode::Delete => {
-                self.query.clear();
-                self.refresh_search(backend);
+                if key.modifiers.contains(KeyModifiers::SUPER) {
+                    self.query.clear();
+                    self.refresh_search(backend);
+                } else if key.modifiers.contains(KeyModifiers::ALT)
+                    || key.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    self.delete_word_backward();
+                    self.refresh_search(backend);
+                } else {
+                    self.query.clear();
+                    self.refresh_search(backend);
+                }
             }
             KeyCode::Enter if !self.results.is_empty() => {
                 self.should_select = true;
@@ -345,6 +373,36 @@ impl App {
         self.ensure_visible();
     }
 
+    fn delete_word_backward(&mut self) {
+        // Delete the word before the cursor (trailing whitespace, then the word).
+        let mut end = self.query.len();
+        // Trim trailing whitespace
+        while end > 0 {
+            if let Some(c) = self.query[..end].chars().last() {
+                if c.is_whitespace() {
+                    end -= c.len_utf8();
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        // Delete until previous whitespace or start
+        while end > 0 {
+            if let Some(c) = self.query[..end].chars().last() {
+                if !c.is_whitespace() {
+                    end -= c.len_utf8();
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        self.query.truncate(end);
+    }
+
     fn results_visible_count(&self) -> usize {
         // Input bar (3) + status bar (1) + results borders (2)
         self.terminal_height.saturating_sub(6).max(1) as usize
@@ -456,5 +514,32 @@ mod tests {
 
         app.move_selection_raw(-1);
         assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn test_delete_word_backward_basic() {
+        let mut app = App::new();
+        app.query = "hello world".into();
+        app.delete_word_backward();
+        assert_eq!(app.query, "hello ");
+
+        app.delete_word_backward();
+        assert_eq!(app.query, "");
+    }
+
+    #[test]
+    fn test_delete_word_backward_trailing_space() {
+        let mut app = App::new();
+        app.query = "foo bar  ".into();
+        app.delete_word_backward();
+        assert_eq!(app.query, "foo ");
+    }
+
+    #[test]
+    fn test_delete_word_backward_empty() {
+        let mut app = App::new();
+        app.query = "".into();
+        app.delete_word_backward();
+        assert_eq!(app.query, "");
     }
 }
