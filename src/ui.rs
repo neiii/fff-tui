@@ -125,18 +125,32 @@ fn draw_input_box(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme)
     ));
     frame.render_widget(prompt, chunks[0]);
 
-    // Render query with a custom non-blinking block cursor at `cursor_position`.
+    // Render query with a non-blinking block cursor.  The cursor highlights the
+    // character *under* it (or a trailing space when at end-of-line) so the text
+    // never shifts as the cursor moves.
     let input_style = Style::default().fg(theme.fg).add_modifier(Modifier::BOLD).italic();
-    let cursor_style = Style::default().bg(theme.selected_bg).add_modifier(Modifier::BOLD);
-    let before = &state.query[..state.cursor_position.min(state.query.len())];
-    let after = &state.query[state.cursor_position.min(state.query.len())..];
+    let cursor_style = Style::default().fg(theme.bg).bg(theme.selected_bg).add_modifier(Modifier::BOLD);
+    let pos = state.cursor_position.min(state.query.len());
+    let before = &state.query[..pos];
+    let after = &state.query[pos..];
+
     let input_line = if state.query.is_empty() {
         Line::from(Span::styled(" ", cursor_style))
-    } else {
+    } else if after.is_empty() {
+        // Cursor at end of line — trailing space with cursor style
         Line::from(vec![
             Span::styled(before.to_string(), input_style),
             Span::styled(" ", cursor_style),
-            Span::styled(after.to_string(), input_style),
+        ])
+    } else {
+        // Cursor in the middle — highlight the first character of `after`
+        let mut chars = after.chars();
+        let under = chars.next().unwrap();
+        let rest: String = chars.collect();
+        Line::from(vec![
+            Span::styled(before.to_string(), input_style),
+            Span::styled(under.to_string(), cursor_style),
+            Span::styled(rest, input_style),
         ])
     };
     let input = Paragraph::new(input_line);

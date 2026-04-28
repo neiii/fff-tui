@@ -236,14 +236,15 @@ impl App {
                             }
                             self.refresh_search(backend);
                         }
-                        'f' => {
+                        'f' => self.move_cursor_word_forward(),
+                        'b' => self.move_cursor_word_backward(),
+                        's' => {
                             self.search_mode.fixed_strings = !self.search_mode.fixed_strings;
                             if self.search_mode.fixed_strings {
                                 self.search_mode.regex = false;
                             }
                             self.refresh_search(backend);
                         }
-                        'b' => self.move_cursor_word_backward(),
                         _ => {}
                     }
                 } else {
