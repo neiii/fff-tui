@@ -56,6 +56,7 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             search_scope: app.search_scope,
             group_grep: app.search_mode.group_grep,
             path_shorten_strategy: app.path_shorten_strategy.clone(),
+            cursor_position: app.cursor_position,
         };
         terminal
             .draw(|f| {
@@ -105,6 +106,7 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             search_scope: app.search_scope,
             group_grep: app.search_mode.group_grep,
             path_shorten_strategy: app.path_shorten_strategy.clone(),
+            cursor_position: app.cursor_position,
         };
         terminal
             .draw(|f| {
@@ -119,6 +121,7 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
 
     // Also simulate typing a query
     app.query.push_str("main");
+    app.cursor_position = app.query.len();
     app.refresh_search(backend);
     for _ in 0..5 {
         let ui_state = UiState {
@@ -138,6 +141,7 @@ pub fn run_headless_dump(backend: &PickerBackend, out_dir: &Path, max_frames: us
             search_scope: app.search_scope,
             group_grep: app.search_mode.group_grep,
             path_shorten_strategy: app.path_shorten_strategy.clone(),
+            cursor_position: app.cursor_position,
         };
         terminal
             .draw(|f| {

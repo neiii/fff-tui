@@ -28,6 +28,8 @@ pub struct App {
     pub current_file: Option<String>,
     pub force_combo_boost: bool,
     pub query_history_offset: usize,
+    /// Byte offset of the cursor inside `query`.
+    pub cursor_position: usize,
     /// Receiver for background exhaustive search results.
     pub background_rx: Option<std::sync::mpsc::Receiver<(String, crate::picker::SearchOutput)>>,
 }
@@ -57,6 +59,7 @@ impl App {
             current_file: None,
             force_combo_boost: false,
             query_history_offset: 0,
+            cursor_position: 0,
             background_rx: None,
         }
     }
@@ -121,6 +124,7 @@ impl App {
             let ui_state = UiState {
                 query: self.query.clone(),
                 highlight_query: self.highlight_query.clone(),
+                cursor_position: self.cursor_position,
                 results: self.results.clone(),
                 selected: self.selected,
                 scroll_offset: self.scroll_offset,
@@ -176,15 +180,29 @@ impl App {
                         'c' => self.should_quit = true,
                         'n' => self.move_selection(1),
                         'p' => self.move_selection(-1),
-                        'a' => self.select_all_visible(),
-                        'd' => self.deselect_all(),
-                        'o' => self.preview_enabled = !self.preview_enabled,
-                        'u' => {
-                            self.query.clear();
+                        'a' => self.cursor_position = 0,
+                        'e' => self.cursor_position = self.query.len(),
+                        'd' => {
+                            if self.cursor_position < self.query.len() {
+                                let ch = self.query[self.cursor_position..].chars().next().unwrap();
+                                let len = ch.len_utf8();
+                                self.query.replace_range(self.cursor_position..self.cursor_position + len, "");
+                                self.refresh_search(backend);
+                            }
+                        }
+                        'k' => {
+                            if self.cursor_position < self.query.len() {
+                                self.query.truncate(self.cursor_position);
+                                self.refresh_search(backend);
+                            }
+                        }
+                        'w' => {
+                            self.delete_word_backward();
                             self.refresh_search(backend);
                         }
-                        'l' => {
+                        'u' | 'l' => {
                             self.query.clear();
+                            self.cursor_position = 0;
                             self.refresh_search(backend);
                         }
                         't' => {
@@ -225,38 +243,47 @@ impl App {
                             }
                             self.refresh_search(backend);
                         }
+                        'b' => self.move_cursor_word_backward(),
                         _ => {}
                     }
                 } else {
-                    self.query.push(c);
+                    self.query.insert(self.cursor_position, c);
+                    self.cursor_position += c.len_utf8();
                     self.refresh_search(backend);
                 }
             }
             KeyCode::Backspace => {
                 if key.modifiers.contains(KeyModifiers::SUPER) {
                     self.query.clear();
+                    self.cursor_position = 0;
                     self.refresh_search(backend);
                 } else if key.modifiers.contains(KeyModifiers::ALT)
                     || key.modifiers.contains(KeyModifiers::CONTROL)
                 {
                     self.delete_word_backward();
                     self.refresh_search(backend);
-                } else {
-                    self.query.pop();
+                } else if self.cursor_position > 0 {
+                    let ch = self.query[..self.cursor_position].chars().last().unwrap();
+                    let len = ch.len_utf8();
+                    self.query.replace_range(self.cursor_position - len..self.cursor_position, "");
+                    self.cursor_position -= len;
                     self.refresh_search(backend);
                 }
             }
             KeyCode::Delete => {
                 if key.modifiers.contains(KeyModifiers::SUPER) {
                     self.query.clear();
+                    self.cursor_position = 0;
                     self.refresh_search(backend);
                 } else if key.modifiers.contains(KeyModifiers::ALT)
                     || key.modifiers.contains(KeyModifiers::CONTROL)
                 {
                     self.delete_word_backward();
                     self.refresh_search(backend);
-                } else {
-                    self.query.clear();
+                } else if self.cursor_position < self.query.len() {
+                    let ch = self.query[self.cursor_position..].chars().next().unwrap();
+                    let len = ch.len_utf8();
+                    self.query.replace_range(self.cursor_position..self.cursor_position + len, "");
                     self.refresh_search(backend);
                 }
             }
@@ -285,13 +312,41 @@ impl App {
             }
             KeyCode::PageUp => self.move_selection_page(-1),
             KeyCode::PageDown => self.move_selection_page(1),
-            KeyCode::Home => {
-                self.selected = 0;
-                self.scroll_offset = 0;
+            KeyCode::Left => {
+                if key.modifiers.contains(KeyModifiers::ALT) {
+                    self.move_cursor_word_backward();
+                } else if key.modifiers.contains(KeyModifiers::SUPER) {
+                    self.cursor_position = 0;
+                } else {
+                    self.move_cursor_left();
+                }
             }
-            KeyCode::End if !self.results.is_empty() => {
-                self.selected = self.results.len() - 1;
-                self.ensure_visible();
+            KeyCode::Right => {
+                if key.modifiers.contains(KeyModifiers::ALT) {
+                    self.move_cursor_word_forward();
+                } else if key.modifiers.contains(KeyModifiers::SUPER) {
+                    self.cursor_position = self.query.len();
+                } else {
+                    self.move_cursor_right();
+                }
+            }
+            KeyCode::Home => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    self.selected = 0;
+                    self.scroll_offset = 0;
+                } else {
+                    self.cursor_position = 0;
+                }
+            }
+            KeyCode::End => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    if !self.results.is_empty() {
+                        self.selected = self.results.len() - 1;
+                        self.ensure_visible();
+                    }
+                } else {
+                    self.cursor_position = self.query.len();
+                }
             }
             _ => {}
         }
@@ -376,10 +431,76 @@ impl App {
         self.ensure_visible();
     }
 
+    fn move_cursor_left(&mut self) {
+        if self.cursor_position == 0 {
+            return;
+        }
+        let ch = self.query[..self.cursor_position].chars().last().unwrap();
+        self.cursor_position -= ch.len_utf8();
+    }
+
+    fn move_cursor_right(&mut self) {
+        if self.cursor_position >= self.query.len() {
+            return;
+        }
+        let ch = self.query[self.cursor_position..].chars().next().unwrap();
+        self.cursor_position += ch.len_utf8();
+    }
+
+    fn move_cursor_word_backward(&mut self) {
+        if self.cursor_position == 0 {
+            return;
+        }
+        // Skip whitespace before cursor
+        while self.cursor_position > 0 {
+            let c = self.query[..self.cursor_position].chars().last().unwrap();
+            if c.is_whitespace() {
+                self.cursor_position -= c.len_utf8();
+            } else {
+                break;
+            }
+        }
+        // Skip word characters
+        while self.cursor_position > 0 {
+            let c = self.query[..self.cursor_position].chars().last().unwrap();
+            if !c.is_whitespace() {
+                self.cursor_position -= c.len_utf8();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn move_cursor_word_forward(&mut self) {
+        if self.cursor_position >= self.query.len() {
+            return;
+        }
+        // Skip word characters after cursor
+        while self.cursor_position < self.query.len() {
+            let c = self.query[self.cursor_position..].chars().next().unwrap();
+            if !c.is_whitespace() {
+                self.cursor_position += c.len_utf8();
+            } else {
+                break;
+            }
+        }
+        // Skip whitespace after cursor
+        while self.cursor_position < self.query.len() {
+            let c = self.query[self.cursor_position..].chars().next().unwrap();
+            if c.is_whitespace() {
+                self.cursor_position += c.len_utf8();
+            } else {
+                break;
+            }
+        }
+    }
+
     fn delete_word_backward(&mut self) {
-        // Delete the word before the cursor (trailing whitespace, then the word).
-        let mut end = self.query.len();
-        // Trim trailing whitespace
+        if self.cursor_position == 0 {
+            return;
+        }
+        let mut end = self.cursor_position;
+        // Skip trailing whitespace before cursor
         while end > 0 {
             if let Some(c) = self.query[..end].chars().last() {
                 if c.is_whitespace() {
@@ -391,7 +512,7 @@ impl App {
                 break;
             }
         }
-        // Delete until previous whitespace or start
+        // Skip word characters
         while end > 0 {
             if let Some(c) = self.query[..end].chars().last() {
                 if !c.is_whitespace() {
@@ -403,7 +524,8 @@ impl App {
                 break;
             }
         }
-        self.query.truncate(end);
+        self.query.replace_range(end..self.cursor_position, "");
+        self.cursor_position = end;
     }
 
     fn results_visible_count(&self) -> usize {
@@ -469,6 +591,7 @@ impl App {
         if new_offset == self.query_history_offset && delta > 0 {
             // Already at 0, clear query
             self.query.clear();
+            self.cursor_position = 0;
             self.force_combo_boost = false;
             self.refresh_search(backend);
             return;
@@ -481,6 +604,7 @@ impl App {
         };
 
         if let Some(q) = query {
+            self.cursor_position = q.len();
             self.query = q;
             self.force_combo_boost = true;
             self.query_history_offset = new_offset;
@@ -523,6 +647,7 @@ mod tests {
     fn test_delete_word_backward_basic() {
         let mut app = App::new();
         app.query = "hello world".into();
+        app.cursor_position = app.query.len();
         app.delete_word_backward();
         assert_eq!(app.query, "hello ");
 
@@ -534,6 +659,7 @@ mod tests {
     fn test_delete_word_backward_trailing_space() {
         let mut app = App::new();
         app.query = "foo bar  ".into();
+        app.cursor_position = app.query.len();
         app.delete_word_backward();
         assert_eq!(app.query, "foo ");
     }
@@ -542,7 +668,66 @@ mod tests {
     fn test_delete_word_backward_empty() {
         let mut app = App::new();
         app.query = "".into();
+        app.cursor_position = 0;
         app.delete_word_backward();
         assert_eq!(app.query, "");
+    }
+
+    #[test]
+    fn test_move_cursor_left_right() {
+        let mut app = App::new();
+        app.query = "abc".into();
+        app.cursor_position = 3;
+        app.move_cursor_left();
+        assert_eq!(app.cursor_position, 2);
+        app.move_cursor_right();
+        assert_eq!(app.cursor_position, 3);
+    }
+
+    #[test]
+    fn test_move_cursor_word_backward() {
+        let mut app = App::new();
+        app.query = "hello world".into();
+        app.cursor_position = app.query.len();
+        app.move_cursor_word_backward();
+        assert_eq!(app.cursor_position, "hello ".len());
+        app.move_cursor_word_backward();
+        assert_eq!(app.cursor_position, 0);
+    }
+
+    #[test]
+    fn test_move_cursor_word_forward() {
+        let mut app = App::new();
+        app.query = "hello world".into();
+        app.cursor_position = 0;
+        app.move_cursor_word_forward();
+        // Skips "hello" and the trailing space
+        assert_eq!(app.cursor_position, "hello ".len());
+        app.move_cursor_word_forward();
+        assert_eq!(app.cursor_position, app.query.len());
+    }
+
+    #[test]
+    fn test_insert_at_cursor() {
+        let mut app = App::new();
+        app.query = "ac".into();
+        app.cursor_position = 1;
+        app.query.insert(app.cursor_position, 'b');
+        app.cursor_position += 'b'.len_utf8();
+        assert_eq!(app.query, "abc");
+        assert_eq!(app.cursor_position, 2);
+    }
+
+    #[test]
+    fn test_backspace_at_cursor() {
+        let mut app = App::new();
+        app.query = "abc".into();
+        app.cursor_position = 2;
+        let ch = app.query[..app.cursor_position].chars().last().unwrap();
+        let len = ch.len_utf8();
+        app.query.replace_range(app.cursor_position - len..app.cursor_position, "");
+        app.cursor_position -= len;
+        assert_eq!(app.query, "ac");
+        assert_eq!(app.cursor_position, 1);
     }
 }

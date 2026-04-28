@@ -29,6 +29,8 @@ pub struct UiState {
     pub search_scope: SearchScope,
     pub group_grep: bool,
     pub path_shorten_strategy: String,
+    /// Byte offset of the cursor inside `query`.
+    pub cursor_position: usize,
 }
 
 pub fn draw(frame: &mut Frame, state: &UiState, theme: &Theme) {
@@ -123,15 +125,18 @@ fn draw_input_box(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme)
     ));
     frame.render_widget(prompt, chunks[0]);
 
-    // Render query with a custom non-blinking block cursor at the end.
+    // Render query with a custom non-blinking block cursor at `cursor_position`.
     let input_style = Style::default().fg(theme.fg).add_modifier(Modifier::BOLD).italic();
     let cursor_style = Style::default().bg(theme.selected_bg).add_modifier(Modifier::BOLD);
+    let before = &state.query[..state.cursor_position.min(state.query.len())];
+    let after = &state.query[state.cursor_position.min(state.query.len())..];
     let input_line = if state.query.is_empty() {
         Line::from(Span::styled(" ", cursor_style))
     } else {
         Line::from(vec![
-            Span::styled(state.query.clone(), input_style),
+            Span::styled(before.to_string(), input_style),
             Span::styled(" ", cursor_style),
+            Span::styled(after.to_string(), input_style),
         ])
     };
     let input = Paragraph::new(input_line);
@@ -940,6 +945,7 @@ mod tests {
             search_scope: SearchScope::default(),
             group_grep: false,
             path_shorten_strategy: "middle_number".into(),
+            cursor_position: 0,
         }
     }
 
@@ -1444,6 +1450,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut state = make_state(false, 10, 0, vec![]);
         state.query = "hello".into();
+        state.cursor_position = 5;
 
         terminal.draw(|f| draw(f, &state, &Theme::default())).unwrap();
         let buf = terminal.backend().buffer();
