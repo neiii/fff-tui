@@ -10,7 +10,7 @@ mod ui;
 
 use app::App;
 use clap::Parser;
-use picker::{PickerBackend, UnifiedResult};
+use picker::{PickerBackend, SearchScope, UnifiedResult};
 use std::process;
 
 #[derive(Parser, Debug)]
@@ -47,6 +47,24 @@ struct Cli {
     /// Deprioritize the active editor file in fuzzy search scoring.
     #[arg(long, value_name = "PATH")]
     current_file: Option<String>,
+
+    /// Initial query to pre-fill the search box.
+    #[arg(long, value_name = "QUERY")]
+    query: Option<String>,
+
+    /// Zed-style symbol breadcrumb (e.g. `mod foo > fn bar`). Extracts the
+    /// leaf identifier and uses it as the initial query.
+    #[arg(long, value_name = "SYMBOL")]
+    symbol: Option<String>,
+
+    /// If exactly one result matches the initial query, exit immediately
+    /// without showing the TUI.
+    #[arg(long)]
+    exit_on_single: bool,
+
+    /// Start in a specific search scope: file, grep, or unified.
+    #[arg(long, value_name = "SCOPE")]
+    scope: Option<String>,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -84,6 +102,53 @@ fn main() {
         process::exit(0);
     }
 
+    // Build App state early so we can handle --exit-on-single without touching the terminal.
+    let mut app = App::new();
+    app.search_mode.group_grep = cli.group;
+    app.path_shorten_strategy = cli.path_shorten;
+    app.current_file = cli.current_file;
+    app.exit_on_single = cli.exit_on_single;
+
+    if let Some(scope_str) = cli.scope {
+        app.search_scope = match scope_str.as_str() {
+            "file" => SearchScope::FileOnly,
+            "grep" => SearchScope::GrepOnly,
+            "unified" => SearchScope::Unified,
+            _ => {
+                eprintln!("Error: invalid scope '{}'. Expected: file, grep, unified", scope_str);
+                process::exit(1);
+            }
+        };
+    }
+
+    let initial_query = cli.query.or_else(|| {
+        cli.symbol.as_ref().map(|s| parse_symbol(s))
+    });
+    if let Some(q) = initial_query {
+        app.query = q;
+        app.cursor_position = app.query.len();
+    }
+
+    // When --exit-on-single is set, wait briefly for the background scan so
+    // the initial search has files to match against.
+    if app.exit_on_single {
+        backend.wait_for_scan(std::time::Duration::from_secs(5));
+    }
+
+    // Run the initial search so --exit-on-single can decide whether we even
+    // need a TTY.
+    app.refresh_search(&backend);
+
+    if app.exit_on_single && !app.query.is_empty() && app.results.len() == 1 {
+        let result = &app.results[0];
+        backend.track_access(&result.absolute_path);
+        if !app.query.is_empty() {
+            backend.track_query_completion(&app.query, &result.absolute_path);
+        }
+        println!("{}", format_result(result, cli.line, cli.column));
+        process::exit(0);
+    }
+
     // Setup terminal
     let mut terminal = match tui::setup_terminal() {
         Ok(t) => t,
@@ -93,11 +158,6 @@ fn main() {
         }
     };
 
-    // Run app
-    let mut app = App::new();
-    app.search_mode.group_grep = cli.group;
-    app.path_shorten_strategy = cli.path_shorten;
-    app.current_file = cli.current_file;
     let result = app.run(&mut terminal, &backend);
 
     // Restore terminal regardless of result
@@ -135,6 +195,36 @@ fn main() {
             process::exit(1);
         }
     }
+}
+
+/// Parse a Zed-style symbol breadcrumb (e.g. `mod foo > fn bar`) and
+/// extract the leaf identifier suitable for grepping.
+fn parse_symbol(symbol: &str) -> String {
+    let leaf = symbol
+        .split('>')
+        .last()
+        .unwrap_or(symbol)
+        .trim();
+
+    let keywords = [
+        "pub ", "async ", "unsafe ", "const ", "static ",
+        "fn ", "mod ", "struct ", "enum ", "trait ", "impl ", "type ", "let ", "macro ",
+    ];
+    let mut s = leaf;
+    loop {
+        let mut changed = false;
+        for kw in &keywords {
+            if let Some(rest) = s.strip_prefix(kw) {
+                s = rest;
+                changed = true;
+                break;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    s.to_string()
 }
 
 fn format_result(result: &UnifiedResult, line: bool, column: bool) -> String {
@@ -177,6 +267,31 @@ mod tests {
             is_definition: Some(false),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn test_parse_symbol_simple() {
+        assert_eq!(parse_symbol("fn test_foo"), "test_foo");
+    }
+
+    #[test]
+    fn test_parse_symbol_breadcrumb() {
+        assert_eq!(parse_symbol("mod tests > fn test_task_contexts"), "test_task_contexts");
+    }
+
+    #[test]
+    fn test_parse_symbol_with_pub_async() {
+        assert_eq!(parse_symbol("pub async fn my_func"), "my_func");
+    }
+
+    #[test]
+    fn test_parse_symbol_no_prefix() {
+        assert_eq!(parse_symbol("MyClass > my_method"), "my_method");
+    }
+
+    #[test]
+    fn test_parse_symbol_struct() {
+        assert_eq!(parse_symbol("mod foo > struct Bar"), "Bar");
     }
 
     #[test]

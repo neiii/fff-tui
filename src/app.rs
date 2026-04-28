@@ -30,6 +30,8 @@ pub struct App {
     pub query_history_offset: usize,
     /// Byte offset of the cursor inside `query`.
     pub cursor_position: usize,
+    /// If true, exit immediately when the initial search returns exactly one result.
+    pub exit_on_single: bool,
     /// Receiver for background exhaustive search results.
     pub background_rx: Option<std::sync::mpsc::Receiver<(String, crate::picker::SearchOutput)>>,
 }
@@ -60,6 +62,7 @@ impl App {
             force_combo_boost: false,
             query_history_offset: 0,
             cursor_position: 0,
+            exit_on_single: false,
             background_rx: None,
         }
     }
@@ -77,6 +80,12 @@ impl App {
 
         // ── Open immediately (like Lua extension) ──
         self.refresh_search(backend);
+
+        // If --exit-on-single is set and the initial search yielded exactly
+        // one match, skip the TUI entirely and return that result straight away.
+        if self.exit_on_single && !self.query.is_empty() && self.results.len() == 1 {
+            return Ok(Some(vec![self.results[0].clone()]));
+        }
 
         while !self.should_quit && !self.should_select {
             // Apply background exhaustive search results when ready.
