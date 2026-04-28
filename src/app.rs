@@ -179,7 +179,10 @@ impl App {
                         'a' => self.select_all_visible(),
                         'd' => self.deselect_all(),
                         'o' => self.preview_enabled = !self.preview_enabled,
-                        'u' => self.move_selection_page(-1),
+                        'u' => {
+                            self.query.clear();
+                            self.refresh_search(backend);
+                        }
                         'l' => {
                             self.query.clear();
                             self.refresh_search(backend);
@@ -205,7 +208,7 @@ impl App {
                             self.refresh_search(backend);
                         }
                         'w' => {
-                            self.search_mode.whole_word = !self.search_mode.whole_word;
+                            self.delete_word_backward();
                             self.refresh_search(backend);
                         }
                         'r' => {

@@ -123,8 +123,18 @@ fn draw_input_box(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme)
     ));
     frame.render_widget(prompt, chunks[0]);
 
-    let input = Paragraph::new(state.query.clone())
-        .style(Style::default().fg(theme.fg).add_modifier(Modifier::BOLD).italic());
+    // Render query with a custom non-blinking block cursor at the end.
+    let input_style = Style::default().fg(theme.fg).add_modifier(Modifier::BOLD).italic();
+    let cursor_style = Style::default().bg(theme.selected_bg).add_modifier(Modifier::BOLD);
+    let input_line = if state.query.is_empty() {
+        Line::from(Span::styled(" ", cursor_style))
+    } else {
+        Line::from(vec![
+            Span::styled(state.query.clone(), input_style),
+            Span::styled(" ", cursor_style),
+        ])
+    };
+    let input = Paragraph::new(input_line);
     frame.render_widget(input, chunks[1]);
 
     let count_text = if state.results.is_empty() {
@@ -1404,5 +1414,51 @@ mod tests {
     fn test_shorten_dir_path_end() {
         let result = shorten_dir_path("very/long/path/name", 10, "end");
         assert!(result.ends_with('…'), "expected truncation with ellipsis: {result}");
+    }
+
+    #[test]
+    fn test_custom_cursor_rendered_empty_query() {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = make_state(false, 10, 0, vec![]);
+        state.query = "".into();
+
+        terminal.draw(|f| draw(f, &state, &Theme::default())).unwrap();
+        let buf = terminal.backend().buffer();
+
+        let theme = Theme::default();
+        // The input area is inside the top block. Look for a space with the
+        // cursor background (selected_bg) in the second row (y == 1).
+        for x in 0..buf.area().width {
+            let cell = &buf[(x, 1)];
+            if cell.symbol() == " " && cell.bg == theme.selected_bg {
+                return; // found cursor
+            }
+        }
+        panic!("could not find cursor block in input area");
+    }
+
+    #[test]
+    fn test_custom_cursor_rendered_with_query() {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = make_state(false, 10, 0, vec![]);
+        state.query = "hello".into();
+
+        terminal.draw(|f| draw(f, &state, &Theme::default())).unwrap();
+        let buf = terminal.backend().buffer();
+
+        let theme = Theme::default();
+        // Find the 'o' at the end of "hello" and check the next cell is the cursor block
+        for y in 0..buf.area().height {
+            for x in 1..buf.area().width {
+                let cell = &buf[(x, y)];
+                let prev = &buf[(x - 1, y)];
+                if prev.symbol() == "o" && cell.symbol() == " " && cell.bg == theme.selected_bg {
+                    return; // found cursor
+                }
+            }
+        }
+        panic!("could not find cursor block after query text");
     }
 }
