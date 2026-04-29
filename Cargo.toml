@@ -8,7 +8,7 @@ name = "fff"
 path = "src/main.rs"
 
 [dependencies]
-fff-search = { path = "../fff.nvim/crates/fff-core" }
+fff-search = "0.6.4"
 ratatui = "0.30"
 crossterm = { version = "0.28", features = ["event-stream"] }
 anyhow = "1.0"
