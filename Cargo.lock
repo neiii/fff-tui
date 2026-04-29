@@ -703,23 +703,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fff-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "crossterm 0.28.1",
- "dirs",
- "fff-search",
- "parking_lot",
- "ratatui",
- "syntect",
- "tokio",
- "tracing",
- "unicode-width",
-]
-
-[[package]]
 name = "fff-grep"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -789,6 +772,23 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "fff-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm 0.28.1",
+ "dirs",
+ "fff-search",
+ "parking_lot",
+ "ratatui",
+ "syntect",
+ "tokio",
+ "tracing",
+ "unicode-width",
 ]
 
 [[package]]

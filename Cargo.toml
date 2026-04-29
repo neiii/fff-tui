@@ -1,10 +1,10 @@
 [package]
-name = "fff-cli"
+name = "fff-tui"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "fff"
+name = "fff-tui"
 path = "src/main.rs"
 
 [dependencies]
@@ -18,4 +18,9 @@ parking_lot = "0.12"
 clap = { version = "4.5", features = ["derive"] }
 dirs = "5.0"
 unicode-width = "0.2"
-syntect = { version = "5.2", default-features = false, features = ["default-syntaxes", "default-themes", "dump-load", "regex-fancy"] }
+syntect = { version = "5.2", default-features = false, features = [
+  "default-syntaxes",
+  "default-themes",
+  "dump-load",
+  "regex-fancy",
+] }

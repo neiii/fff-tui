@@ -226,14 +226,21 @@ impl App {
                             self.search_mode.group_grep = !self.search_mode.group_grep;
                             self.refresh_search(backend);
                         }
+                        // 'y' => {
+                        //     self.search_mode.case_sensitive = !self.search_mode.case_sensitive;
+                        //     self.refresh_search(backend);
+                        // }
+                        // 'o' => {
+                        //     self.search_mode.fixed_strings = !self.search_mode.fixed_strings;
+                        //     if self.search_mode.fixed_strings {
+                        //         self.search_mode.regex = false;
+                        //     }
+                        //     self.refresh_search(backend);
+                        // }
                         _ => {}
                     }
                 } else if key.modifiers.contains(KeyModifiers::ALT) {
                     match c.to_ascii_lowercase() {
-                        'c' => {
-                            self.search_mode.case_sensitive = !self.search_mode.case_sensitive;
-                            self.refresh_search(backend);
-                        }
                         'w' => {
                             self.delete_word_backward();
                             self.refresh_search(backend);
@@ -247,13 +254,6 @@ impl App {
                         }
                         'f' => self.move_cursor_word_forward(),
                         'b' => self.move_cursor_word_backward(),
-                        's' => {
-                            self.search_mode.fixed_strings = !self.search_mode.fixed_strings;
-                            if self.search_mode.fixed_strings {
-                                self.search_mode.regex = false;
-                            }
-                            self.refresh_search(backend);
-                        }
                         _ => {}
                     }
                 } else {

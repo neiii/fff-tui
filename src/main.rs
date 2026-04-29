@@ -14,7 +14,7 @@ use picker::{PickerBackend, SearchScope, UnifiedResult};
 use std::process;
 
 #[derive(Parser, Debug)]
-#[command(name = "fff")]
+#[command(name = "fff-tui")]
 #[command(about = "Fast file finder — a blazingly fast fuzzy file picker")]
 struct Cli {
     #[command(subcommand)]
