@@ -49,6 +49,16 @@ Options:
   -h, --help                    Print help
 ``` 
 
+# Installation
+
+```bash
+git clone https://github.com/neiii/fff-tui 
+cd fff-tui 
+cargo install --path .
+fff-tui # is now available 
+```
+
+
 # Zed Tasks 
 Obviously these are for personal preference on hwo you stack different arguments, but this is my setup. 
 ```json
