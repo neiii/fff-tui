@@ -60,7 +60,7 @@ fff-tui # is now available
 
 
 # Zed Tasks 
-Obviously these are for personal preference on hwo you stack different arguments, but this is my setup. 
+Obviously these are for personal preference on how you stack different arguments, but this is my setup. 
 ```json
   {
     "label": "fff",
